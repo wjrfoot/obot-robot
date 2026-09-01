@@ -1,0 +1,16 @@
+[Unit]
+Description=OBot ROS 2 Control Bringup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi
+ExecStartPre=/bin/sleep 10
+ExecStart=/home/pi/service_scripts/start_obot.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

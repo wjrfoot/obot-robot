@@ -1,0 +1,274 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="obot">
+
+  <!--
+    OBot mobile-base description.
+
+    ROS coordinate convention:
+      +X forward
+      +Y left
+      +Z up
+
+    Frames:
+      base_footprint: floor plane at the geometric center of the base plate.
+      base_link:      geometric center of the 0.25-in-thick base plate.
+
+    Measured geometry:
+      Base plate:            14.5 in long (X), 16.0 in wide (Y), 0.25 in thick
+      Drive wheels:          7.0 in diameter, 2.0 in wide
+      Drive axle:            1.0 in behind front plate edge
+      Wheel/plate side gap:  0.25 in
+      Drive axle height:     3.0 in below bottom of plate
+      Caster pivot:          1.5 in forward of rear edge
+                             2.25 in inward from each side
+      Caster wheel:          5.0 in diameter
+      Caster trail:          2.0 in behind swivel pivot
+
+    The caster wheel width has not yet been measured and is currently modeled
+    as 1.0 in. Change caster_wheel_width when the measured value is available.
+
+    Inertial properties are intentionally omitted until component masses and
+    mass distribution are measured.
+  -->
+
+  <xacro:property name="inch" value="0.0254"/>
+
+  <!-- Base plate -->
+  <xacro:property name="base_length" value="${14.5 * inch}"/>
+  <xacro:property name="base_width" value="${16.0 * inch}"/>
+  <xacro:property name="base_thickness" value="${0.25 * inch}"/>
+
+  <!-- Drive wheel geometry -->
+  <xacro:property name="drive_wheel_radius" value="${3.5 * inch}"/>
+  <xacro:property name="drive_wheel_width" value="${2.0 * inch}"/>
+
+  <!--
+    Drive axle is 1 in behind the front edge:
+      X = 14.5/2 - 1.0 = +6.25 in
+
+    Wheel centerline is:
+      16/2 + 0.25 gap + 2/2 = +/-9.25 in
+
+    Axle is 3 in below the bottom surface of the plate.
+    Since base_link is at plate center:
+      Z = -(3.0 + 0.25/2) = -3.125 in
+  -->
+  <xacro:property name="drive_axle_x" value="${6.25 * inch}"/>
+  <xacro:property name="drive_wheel_y" value="${9.25 * inch}"/>
+  <xacro:property name="drive_axle_z" value="${-3.125 * inch}"/>
+
+  <!--
+    Drive wheel radius is 3.5 in, so axle is 3.5 in above floor.
+    base_link is therefore 3.5 - (-3.125) = 6.625 in above floor.
+  -->
+  <xacro:property name="base_link_height" value="${6.625 * inch}"/>
+
+  <!-- Rear caster geometry -->
+  <xacro:property name="caster_wheel_radius" value="${2.5 * inch}"/>
+  <xacro:property name="caster_wheel_width" value="${1.0 * inch}"/>
+  <xacro:property name="caster_trail" value="${2.0 * inch}"/>
+
+  <!--
+    Pivot position:
+      X = -(14.5/2 - 1.5) = -5.75 in
+      Y = +/- (16/2 - 2.25) = +/-5.75 in
+
+    Pivot is attached at the bottom surface of the plate:
+      Z = -0.125 in relative to base_link
+
+    Caster axle center must be 2.5 in above floor:
+      Z = 2.5 - 6.625 = -4.125 in relative to base_link
+  -->
+  <xacro:property name="caster_pivot_x" value="${-5.75 * inch}"/>
+  <xacro:property name="caster_pivot_y" value="${5.75 * inch}"/>
+  <xacro:property name="caster_pivot_z" value="${-0.125 * inch}"/>
+  <xacro:property name="caster_axle_z_from_base" value="${-4.125 * inch}"/>
+  <xacro:property name="caster_axle_z_from_pivot" value="${-4.0 * inch}"/>
+
+  <material name="base_gray">
+    <color rgba="0.55 0.55 0.55 1.0"/>
+  </material>
+
+  <material name="wheel_black">
+    <color rgba="0.08 0.08 0.08 1.0"/>
+  </material>
+
+  <!-- ======================== -->
+  <!-- Base reference frames    -->
+  <!-- ======================== -->
+
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_to_base_link" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${base_link_height}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_thickness}"/>
+      </geometry>
+      <material name="base_gray"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_thickness}"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- ======================== -->
+  <!-- Drive wheels             -->
+  <!-- ======================== -->
+
+  <xacro:macro name="drive_wheel" params="side y">
+    <link name="${side}_drive_wheel_link">
+      <visual>
+        <!-- Cylinder axis is rotated from Z onto Y. -->
+        <origin xyz="0 0 0" rpy="${pi/2.0} 0 0"/>
+        <geometry>
+          <cylinder radius="${drive_wheel_radius}" length="${drive_wheel_width}"/>
+        </geometry>
+        <material name="wheel_black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi/2.0} 0 0"/>
+        <geometry>
+          <cylinder radius="${drive_wheel_radius}" length="${drive_wheel_width}"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <joint name="${side}_drive_wheel_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${side}_drive_wheel_link"/>
+      <origin xyz="${drive_axle_x} ${y} ${drive_axle_z}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:drive_wheel side="left"  y="${ drive_wheel_y}"/>
+  <xacro:drive_wheel side="right" y="${-drive_wheel_y}"/>
+
+  <!-- ======================== -->
+  <!-- Rear swivel casters      -->
+  <!-- ======================== -->
+
+  <xacro:macro name="caster" params="side y">
+    <link name="${side}_caster_swivel_link">
+      <!-- Simple placeholder visual for the swivel/fork attachment. -->
+      <visual>
+        <origin xyz="0 0 -${0.25 * inch}" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${0.35 * inch}" length="${0.5 * inch}"/>
+        </geometry>
+        <material name="base_gray"/>
+      </visual>
+    </link>
+
+    <joint name="${side}_caster_swivel_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${side}_caster_swivel_link"/>
+      <origin xyz="${caster_pivot_x} ${y} ${caster_pivot_z}" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+    </joint>
+
+    <link name="${side}_caster_wheel_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="${pi/2.0} 0 0"/>
+        <geometry>
+          <cylinder radius="${caster_wheel_radius}" length="${caster_wheel_width}"/>
+        </geometry>
+        <material name="wheel_black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi/2.0} 0 0"/>
+        <geometry>
+          <cylinder radius="${caster_wheel_radius}" length="${caster_wheel_width}"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <joint name="${side}_caster_wheel_joint" type="continuous">
+      <parent link="${side}_caster_swivel_link"/>
+      <child link="${side}_caster_wheel_link"/>
+      <!--
+        At zero swivel angle, the caster wheel trails 2 in behind the pivot.
+      -->
+      <origin xyz="${-caster_trail} 0 ${caster_axle_z_from_pivot}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- ======================== -->
+  <!-- SLAMTEC A2M12 LiDAR      -->
+  <!-- ======================== -->
+
+  <!--
+    LiDAR position:
+      Centered laterally between drive wheels.
+      3.0 in forward of drive axle.
+      20.0 in above floor.
+
+    Drive axle X relative to base_link:
+      6.25 in
+
+    Therefore LiDAR X:
+      6.25 + 3.0 = 9.25 in
+
+    base_link is 6.625 in above floor.
+
+    Therefore LiDAR Z relative to base_link:
+      20.0 - 6.625 = 13.375 in
+  -->
+
+  <xacro:property name="lidar_x" value="${9.25 * inch}"/>
+  <xacro:property name="lidar_z" value="${13.375 * inch}"/>
+
+  <link name="laser"/>
+
+  <joint name="base_link_to_laser" type="fixed">
+    <parent link="base_link"/>
+    <child link="laser"/>
+    <origin xyz="${lidar_x} 0 ${lidar_z}" rpy="0 0 ${pi/2.0}"/>
+  </joint>
+
+  <xacro:caster side="left"  y="${ caster_pivot_y}"/>
+  <xacro:caster side="right" y="${-caster_pivot_y}"/>
+
+  <ros2_control name="OBotSystem" type="system">
+    <hardware>
+      <plugin>odrive_ros2_control_plugin/ODriveHardwareInterface</plugin>
+      <param name="can">can0</param>
+    </hardware>
+
+    <joint name="left_drive_wheel_joint">
+      <param name="node_id">0</param>
+
+      <command_interface name="velocity"/>
+      <command_interface name="position"/>
+      <command_interface name="effort"/>
+
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+
+    <joint name="right_drive_wheel_joint">
+      <param name="node_id">1</param>
+
+      <command_interface name="velocity"/>
+      <command_interface name="position"/>
+      <command_interface name="effort"/>
+
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </ros2_control>
+
+</robot>

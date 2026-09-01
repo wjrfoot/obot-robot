@@ -1,0 +1,19 @@
+#!/bin/bash
+set -e
+
+source /opt/ros/jazzy/setup.bash
+
+echo "Clearing ODrive faults..."
+cansend can0 018#
+cansend can0 038#
+
+sleep 1
+
+echo "Cycling diff_drive_controller..."
+ros2 control set_controller_state diff_drive_controller inactive
+sleep 1
+ros2 control set_controller_state diff_drive_controller active
+
+echo
+echo "Controller state:"
+ros2 control list_controllers

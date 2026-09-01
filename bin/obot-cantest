@@ -1,0 +1,1 @@
+timeout 1 candump -t a can0

@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+OUT="$HOME/battery_tests/can_$(date +%Y%m%d_%H%M%S).csv"
+
+echo "timestamp,epoch,can_state,interface_up" > "$OUT"
+
+echo "Logging CAN status to:"
+echo "  $OUT"
+echo "Press Ctrl-C to stop."
+
+while true; do
+    TS=$(date --iso-8601=seconds)
+    EPOCH=$(date +%s.%N)
+
+    INFO=$(ip -details link show can0 2>/dev/null || true)
+
+    if echo "$INFO" | grep -q '<[^>]*UP'; then
+        UP=1
+    else
+        UP=0
+    fi
+
+    STATE=$(echo "$INFO" | grep -o 'can state [A-Z-]*' | awk '{print $3}')
+
+    if [ -z "$STATE" ]; then
+        STATE="MISSING"
+    fi
+
+    echo "$TS,$EPOCH,$STATE,$UP" >> "$OUT"
+
+    sync "$OUT" 2>/dev/null || true
+    sleep 1
+done

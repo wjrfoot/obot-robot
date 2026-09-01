@@ -1,0 +1,23 @@
+# ROS / colcon generated directories
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Backup/editor files
+*.bak
+*.old
+*.bk*
+*~
+*.swp
+
+# Third-party repositories installed separately
+src/ros_odrive/
+src/sllidar_ros2/
+
+# Machine-specific CycloneDDS configuration
+src/obot_bringup/config/cyclonedds_wifi.xml

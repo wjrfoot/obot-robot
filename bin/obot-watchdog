@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+
+import os
+import re
+import select
+import subprocess
+import time
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String
+
+
+CHECK_PERIOD = 2.0
+CAN_FAULT_COUNT_REQUIRED = 2
+
+
+class OBotWatchdog(Node):
+
+    def __init__(self):
+        super().__init__('obot_watchdog')
+
+        self.pub = self.create_publisher(
+            String,
+            '/obot/watchdog_event',
+            10
+        )
+
+        self.can_fault_count = 0
+
+        self.get_logger().info(
+            'OBot drive watchdog started'
+        )
+
+    def notify(self, text):
+        self.get_logger().warn(text)
+
+        msg = String()
+        msg.data = text
+
+        # Send several times over a short interval so a newly discovered
+        # remote subscriber has a good chance of receiving the event.
+        self.pub.publish(msg)
+        rclpy.spin_once(self, timeout_sec=0.05)
+
+    @staticmethod
+    def run(cmd, timeout=10):
+        return subprocess.run(
+            cmd,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False
+        )
+
+    def get_can_state(self):
+        result = self.run([
+            'ip', '-details', 'link', 'show', 'can0'
+        ])
+
+        match = re.search(
+            r'can state ([A-Z-]+)',
+            result.stdout
+        )
+
+        if not match:
+            return 'UNKNOWN'
+
+        return match.group(1)
+
+    def read_s1_errors(self):
+        """
+        Return:
+            {
+                0: (active_errors, disarm_reason),
+                1: (active_errors, disarm_reason)
+            }
+
+        CAN IDs:
+            node 0 Get_Error = 0x003
+            node 1 Get_Error = 0x023
+        """
+
+        proc = subprocess.Popen(
+            [
+                'candump',
+                '-L',
+                'can0,003:7FF,023:7FF'
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True
+        )
+
+        try:
+            # Make sure candump is listening before sending RTR requests.
+            time.sleep(0.05)
+
+            self.run(['cansend', 'can0', '003#R'])
+            self.run(['cansend', 'can0', '023#R'])
+
+            responses = {}
+            deadline = time.monotonic() + 0.5
+
+            while time.monotonic() < deadline and len(responses) < 2:
+
+                ready, _, _ = select.select(
+                    [proc.stdout],
+                    [],
+                    [],
+                    0.1
+                )
+
+                if not ready:
+                    continue
+
+                line = proc.stdout.readline()
+
+                # Example:
+                # (timestamp) can0 003#0000000000020000
+
+                match = re.search(
+                    r'can0\s+(003|023)#([0-9A-Fa-f]{16})',
+                    line
+                )
+
+                if not match:
+                    continue
+
+                can_id = match.group(1)
+                payload = bytes.fromhex(match.group(2))
+
+                active_errors = int.from_bytes(
+                    payload[0:4],
+                    byteorder='little'
+                )
+
+                disarm_reason = int.from_bytes(
+                    payload[4:8],
+                    byteorder='little'
+                )
+
+                node = 0 if can_id == '003' else 1
+
+                responses[node] = (
+                    active_errors,
+                    disarm_reason
+                )
+
+            return responses
+
+        finally:
+            proc.terminate()
+
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    def reset_can_and_ros(self, state):
+        self.notify(
+            f'OBot watchdog: CAN fault detected ({state}). '
+            'Resetting CAN and restarting obot.service.'
+        )
+
+        self.run([
+            'sudo', 'systemctl', 'stop', 'obot.service'
+        ])
+
+        self.run([
+            'sudo', 'ip', 'link', 'set', 'can0', 'down'
+        ])
+
+        self.run([
+            'sudo', 'ip', 'link', 'set', 'can0', 'up',
+            'type', 'can',
+            'bitrate', '1000000',
+            'restart-ms', '100'
+        ])
+
+        self.run([
+            'sudo', 'systemctl', 'start', 'obot.service'
+        ])
+
+        time.sleep(5)
+
+        self.notify(
+            'OBot watchdog: CAN reset complete and '
+            'obot.service restarted.'
+        )
+
+    def recover_s1_fault(self, errors):
+
+        details = []
+
+        for node, values in sorted(errors.items()):
+            active, disarm = values
+
+            if active != 0 or disarm != 0:
+                details.append(
+                    f'S1 node {node}: '
+                    f'active=0x{active:08X}, '
+                    f'disarm=0x{disarm:08X}'
+                )
+
+        self.notify(
+            'OBot watchdog: S1 fault detected. '
+            + '; '.join(details)
+        )
+
+        # Clear errors on both S1s.
+        self.run(['cansend', 'can0', '018#'])
+        self.run(['cansend', 'can0', '038#'])
+
+        time.sleep(0.5)
+
+        # We proved experimentally that the controller must be cycled
+        # after an S1 disarm, even when ros2_control still reports active.
+        self.run([
+            'ros2', 'control',
+            'set_controller_state',
+            'diff_drive_controller',
+            'inactive'
+        ])
+
+        time.sleep(0.5)
+
+        self.run([
+            'ros2', 'control',
+            'set_controller_state',
+            'diff_drive_controller',
+            'active'
+        ])
+
+        self.notify(
+            'OBot watchdog: S1 faults cleared and '
+            'diff_drive_controller reactivated.'
+        )
+
+    def check_once(self):
+
+        can_state = self.get_can_state()
+
+        if can_state != 'ERROR-ACTIVE':
+
+            self.can_fault_count += 1
+
+            if self.can_fault_count >= CAN_FAULT_COUNT_REQUIRED:
+                self.can_fault_count = 0
+                self.reset_can_and_ros(can_state)
+
+            return
+
+        self.can_fault_count = 0
+
+        errors = self.read_s1_errors()
+
+        # If neither S1 answered, do not immediately tear down CAN.
+        # The next watchdog pass will try again.
+        if not errors:
+            self.get_logger().warn(
+                'No S1 Get_Error responses received'
+            )
+            return
+
+        fault_present = any(
+            active != 0 or disarm != 0
+            for active, disarm in errors.values()
+        )
+
+        if fault_present:
+            self.recover_s1_fault(errors)
+
+
+def main():
+
+    rclpy.init()
+
+    node = OBotWatchdog()
+
+    try:
+        while rclpy.ok():
+
+            start = time.monotonic()
+
+            try:
+                node.check_once()
+            except Exception as exc:
+                node.get_logger().error(
+                    f'Watchdog check failed: {exc}'
+                )
+
+            rclpy.spin_once(
+                node,
+                timeout_sec=0.05
+            )
+
+            elapsed = time.monotonic() - start
+            delay = max(0.1, CHECK_PERIOD - elapsed)
+
+            time.sleep(delay)
+
+    except KeyboardInterrupt:
+        pass
+
+    finally:
+        node.destroy_node()
+
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
