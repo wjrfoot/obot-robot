@@ -17,7 +17,6 @@
   <exec_depend>image_rotate</exec_depend>
   <exec_depend>sllidar_ros2</exec_depend>
   <exec_depend>twist_mux</exec_depend>
-  <exec_depend>obot_twist_stamper</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
