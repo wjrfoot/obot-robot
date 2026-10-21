@@ -18,6 +18,8 @@
   <depend>nav2_msgs</depend>
   <depend>tf2_ros</depend>
   <depend>obot_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>lifecycle_msgs</depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
