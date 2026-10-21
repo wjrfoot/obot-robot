@@ -40,6 +40,7 @@ setup(
     entry_points={
         'console_scripts': [
             'tank_mixer_node = obot.tank_mixer_node:main',
+            'obot_status_node = obot.obot_status_node:main',
             'wifi_signal_sampler = obot.wifi_signal_sampler:main',
             'wifi_heatmap_aggregator = obot.wifi_heatmap_aggregator:main',
             'wifi_area_surveyor = obot.wifi_area_surveyor:main',
