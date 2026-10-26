@@ -22,6 +22,8 @@ OBot is the current mobile-robot platform for the SprayBot research project. It 
 - `src/obot_bringup` — robot bringup and configuration
 - `src/obot_description` — URDF/Xacro, controllers, and RViz configuration
 - `src/obot_msgs` — OBot-specific ROS messages
+- `src/obot_valve_interfaces` — spray valve action and completion message
+- `src/obot_valve_controller` — spray valve action server (robot) and PS4 client (laptop); see its README
 - `bin` — robot diagnostic and recovery utilities
 - `service_scripts` — scripts used by systemd
 - `systemd` — systemd service definitions

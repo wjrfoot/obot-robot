@@ -1,0 +1,23 @@
+valve_server:
+  ros__parameters:
+    circle_duration: 1.0
+    square_duration: 3.0
+    triangle_duration: 5.0
+    gpio_chip: /dev/gpiochip4
+    gpio_pin: 22
+    active_high: true
+    feedback_rate: 10.0
+    mock_gpio: false
+
+ps4_valve_client:
+  ros__parameters:
+    joy_topic: /joy
+    action_name: /obot/spray
+    valve_state_topic: /obot/valve/state
+    rumble_intensity: 0.5
+    valve_feedback_timeout: 0.6
+    rumble_refresh_period: 0.2
+    circle_button: -1
+    square_button: -1
+    triangle_button: -1
+    cross_button: -1

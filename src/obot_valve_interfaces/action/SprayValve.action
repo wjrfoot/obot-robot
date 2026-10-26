@@ -1,0 +1,10 @@
+uint8 spray_mode
+---
+bool completed
+bool canceled
+float32 actual_duration
+string message
+---
+float32 elapsed_time
+float32 remaining_time
+bool valve_open
