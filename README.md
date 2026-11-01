@@ -43,6 +43,8 @@ The OBot installation contains a local ROS 2 Jazzy build fix adding `find_packag
 
 The modification is preserved in `patches/ros_odrive_jazzy.patch`.
 
+The OBot installation also sets `Input_Mode = INPUT_MODE_VEL_RAMP` in velocity control mode, preserved in `patches/ros_odrive_vel_ramp.patch`. The installation is based on upstream commit `efe8f77`.
+
 ### sllidar_ros2
 
 Upstream repository: https://github.com/Slamtec/sllidar_ros2

@@ -1,0 +1,12 @@
+diff --git a/odrive_ros2_control/src/odrive_hardware_interface.cpp b/odrive_ros2_control/src/odrive_hardware_interface.cpp
+index a0691ef..fc86aaf 100644
+--- a/odrive_ros2_control/src/odrive_hardware_interface.cpp
++++ b/odrive_ros2_control/src/odrive_hardware_interface.cpp
+@@ -318,6 +318,7 @@ void ODriveHardwareInterface::set_axis_command_mode(const Axis& axis) {
+     } else if (axis.vel_input_enabled_) {
+         RCLCPP_INFO(rclcpp::get_logger("ODriveHardwareInterface"), "Setting to velocity control.");
+         control_msg.Control_Mode = CONTROL_MODE_VELOCITY_CONTROL;
++        control_msg.Input_Mode = INPUT_MODE_VEL_RAMP;
+     } else if (axis.torque_input_enabled_) {
+         RCLCPP_INFO(rclcpp::get_logger("ODriveHardwareInterface"), "Setting to torque control.");
+         control_msg.Control_Mode = CONTROL_MODE_TORQUE_CONTROL;

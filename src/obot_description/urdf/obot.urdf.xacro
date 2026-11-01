@@ -247,7 +247,7 @@
     </hardware>
 
     <joint name="left_drive_wheel_joint">
-      <param name="node_id">0</param>
+      <param name="node_id">61</param>
 
       <command_interface name="velocity"/>
       <command_interface name="position"/>
@@ -259,7 +259,7 @@
     </joint>
 
     <joint name="right_drive_wheel_joint">
-      <param name="node_id">1</param>
+      <param name="node_id">62</param>
 
       <command_interface name="velocity"/>
       <command_interface name="position"/>
