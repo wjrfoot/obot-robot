@@ -3,10 +3,19 @@ from launch.substitutions import Command, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
-from launch.actions import IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
+    # Default keeps OBot-1 behaviour; OBot-2 passes twist_mux_obot2.yaml.
+    twist_mux_config = LaunchConfiguration("twist_mux_config")
+    twist_mux_config_arg = DeclareLaunchArgument(
+        "twist_mux_config",
+        default_value="twist_mux.yaml",
+        description="twist_mux YAML file name inside obot_bringup/config",
+    )
+
     package_share = FindPackageShare("obot_description")
     bringup_share = FindPackageShare("obot_bringup")
 
@@ -92,7 +101,7 @@ def generate_launch_description():
             PathJoinSubstitution([
                 bringup_share,
                 "config",
-                "twist_mux.yaml",
+                twist_mux_config,
             ])
         ],
         remappings=[
@@ -101,6 +110,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        twist_mux_config_arg,
         robot_state_publisher,
         controller_manager,
         joint_state_broadcaster_spawner,

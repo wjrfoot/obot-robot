@@ -1,0 +1,22 @@
+[Unit]
+Description=OBot-2 ODrive S1 fault watchdog
+# Ordering only: no Requires/BindsTo, so this unit never stops or restarts
+# obot.service and an obot.service restart does not stop the watchdog.
+After=network-online.target obot.service
+Wants=network-online.target
+ConditionPathExists=/home/pi/obot_ws/src/obot_bringup/config/cyclonedds_wifi.xml
+
+[Service]
+Type=simple
+User=pi
+Environment=HOME=/home/pi
+Environment=ROS_DOMAIN_ID=5
+Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+# Machine-local file; must be checked/created for pi-bot-2's own interface.
+Environment=CYCLONEDDS_URI=file:///home/pi/obot_ws/src/obot_bringup/config/cyclonedds_wifi.xml
+ExecStart=/bin/bash -c 'source /opt/ros/jazzy/setup.bash && source /home/pi/obot_ws/install/setup.bash && exec ros2 launch obot_watchdog obot2_watchdog.launch.py'
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+twist_mux:
+  ros__parameters:
+    topics:
+      watchdog:
+        topic: /cmd_vel_watchdog
+        timeout: 0.5
+        priority: 200
+
+      joystick:
+        topic: /cmd_vel_teleop
+        timeout: 0.5
+        priority: 100
+
+      navigation:
+        topic: /cmd_vel_nav
+        timeout: 0.5
+        priority: 10
+
+    # A lock masks every topic whose priority is below the lock priority.
+    # In twist_mux a lock counts as LOCKED when it has expired OR its last
+    # Bool is true, and a lock that never received a message is expired.
+    # So a POSITIVE timeout is fail-closed: twist_mux starts locked, and the
+    # lock re-engages if the watchdog stops publishing (the watchdog
+    # republishes at 10 Hz). A timeout of 0.0 would NEVER expire, which
+    # starts unlocked - do not use it.
+    # Priority 150 blocks teleop (100) and navigation (10) but not the
+    # watchdog's own zero-velocity stream (200).
+    locks:
+      watchdog_lock:
+        topic: /watchdog_lock
+        timeout: 0.5
+        priority: 150

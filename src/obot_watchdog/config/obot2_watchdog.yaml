@@ -1,0 +1,42 @@
+# OBot-2 watchdog parameters. Safe defaults: dry_run and automatic recovery
+# are both OFF, and the values marked UNVALIDATED are intentionally unset
+# (.nan), which keeps automatic recovery refused until they are validated.
+obot2_watchdog:
+  ros__parameters:
+    # Robot-specific hardware (OBot-1 uses node IDs 0 and 1 - do not copy).
+    robot_name: OBot-2
+    can_interface: can0
+    can_bitrate: 1000000
+    left_node_id: 61
+    right_node_id: 62
+
+    joy_topic: /joy
+    deadman_button: 4            # PS4 F1
+
+    monitor_interval: 2.0
+    observation_window: 60.0     # preliminary, not a validated safety limit
+    max_recoveries: 3            # preliminary, not a validated safety limit
+
+    motion_inhibit_topic: /cmd_vel_watchdog
+    motion_lock_topic: /watchdog_lock
+    notification_topic: /obot/watchdog_event
+    mux_output_topic: /diff_drive_controller/cmd_vel
+    odom_topic: /diff_drive_controller/odom
+
+    dry_run: true
+    automatic_recovery_enabled: false
+
+    # Only DC_BUS_OVER_VOLTAGE (0x100) is eligible for automatic recovery.
+    recoverable_error_mask: 256
+
+    # UNVALIDATED: verify against the actual OBot-2 S1 configuration
+    # (dc_max_positive_current / over-voltage trip) and the battery system.
+    voltage_min_v: .nan
+    voltage_normal_max_v: .nan
+    voltage_unsafe_v: .nan
+    # UNVALIDATED timeouts (seconds).
+    voltage_settle_timeout_s: .nan
+    verify_timeout_s: .nan
+
+    fault_log_path: /home/pi/obot_logs/obot2_watchdog_faults.jsonl
+    state_file: /home/pi/obot_logs/obot2_watchdog_state.json
