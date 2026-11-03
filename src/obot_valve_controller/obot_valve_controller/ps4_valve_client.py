@@ -48,10 +48,10 @@ class PS4ValveClient(Node):
         self.declare_parameter('rumble_intensity', 0.5)
         self.declare_parameter('valve_feedback_timeout', 0.6)
         self.declare_parameter('rumble_refresh_period', 0.2)
-        self.declare_parameter('circle_button', -1)
-        self.declare_parameter('square_button', -1)
+        self.declare_parameter('circle_button', 1)
+        self.declare_parameter('square_button', 3)
         self.declare_parameter('triangle_button', -1)
-        self.declare_parameter('cross_button', -1)
+        self.declare_parameter('cross_button', 0)
 
         self._joy_topic = str(self.get_parameter('joy_topic').value)
         self._state_topic = str(
@@ -83,11 +83,13 @@ class PS4ValveClient(Node):
         if len(configured_indices) != len(set(configured_indices)):
             raise ValueError('Configured face-button indices must be unique')
         self._button_edges = ButtonEdgeDetector(button_indices)
-        if any(index < 0 for index in button_indices.values()):
+        if any(
+            button_indices[name] < 0
+            for name in ('circle', 'square', 'cross')
+        ):
             self.get_logger().warning(
-                'One or more face-button indices are unset; set the '
-                'circle_button, square_button, triangle_button, and '
-                'cross_button parameters using the live /joy message layout'
+                'One or more required PS4 buttons are unconfigured; '
+                'check circle_button, square_button, and cross_button'
             )
 
         self._rumble = ValveRumbleState(

@@ -37,8 +37,8 @@ class ValveServer(Node):
             parameter_overrides=parameter_overrides,
         )
 
-        self.declare_parameter('circle_duration', 1.0)
-        self.declare_parameter('square_duration', 3.0)
+        self.declare_parameter('circle_duration', 4.0)
+        self.declare_parameter('square_duration', 2.0)
         self.declare_parameter('triangle_duration', 5.0)
         self.declare_parameter('gpio_chip', '/dev/gpiochip4')
         self.declare_parameter('gpio_pin', 22)
