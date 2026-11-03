@@ -18,10 +18,10 @@ def generate_launch_description():
     ])
 
     return LaunchDescription([
-        DeclareLaunchArgument('circle_button', default_value='-1'),
-        DeclareLaunchArgument('square_button', default_value='-1'),
+        DeclareLaunchArgument('circle_button', default_value='1'),
+        DeclareLaunchArgument('square_button', default_value='3'),
         DeclareLaunchArgument('triangle_button', default_value='-1'),
-        DeclareLaunchArgument('cross_button', default_value='-1'),
+        DeclareLaunchArgument('cross_button', default_value='0'),
         Node(
             package='obot_valve_controller',
             executable='ps4_valve_client',
