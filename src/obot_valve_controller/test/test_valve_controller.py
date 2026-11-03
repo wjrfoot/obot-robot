@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from obot_valve_controller.client_logic import (
     ButtonEdgeDetector,
     ValveRumbleState,
+    WatchdogRumbleState,
 )
 from obot_valve_controller.gpio_backend import (
     GpiodGPIOOutput,
@@ -333,5 +334,217 @@ def test_cross_requests_cancel_while_waiting_for_goal_acceptance():
         node._on_joy(SimpleNamespace(buttons=[0, 0, 0, 1]))
         assert node._cancel_pending
         assert node._active
+    finally:
+        node.destroy_node()
+
+
+def test_watchdog_fault_rumble_pattern():
+    from obot_valve_controller.client_logic import WatchdogRumbleState
+
+    rumble = WatchdogRumbleState()
+    assert rumble.trigger('fault', now=100.0)
+
+    assert rumble.output(100.00) == 0.8
+    assert rumble.output(100.30) == 0.0
+    assert rumble.output(100.50) == 0.8
+    assert rumble.output(100.75) == 0.0
+    assert rumble.output(101.00) == 0.8
+    assert rumble.output(101.16) is None
+    assert not rumble.active
+
+
+def test_watchdog_recovery_rumble_pattern():
+    from obot_valve_controller.client_logic import WatchdogRumbleState
+
+    rumble = WatchdogRumbleState()
+    assert rumble.trigger('recovered', now=100.0)
+
+    assert rumble.output(100.00) == 0.8
+    assert rumble.output(100.20) == 0.8
+    assert rumble.output(100.26) is None
+    assert not rumble.active
+
+
+def test_watchdog_lockout_rumble_pattern():
+    from obot_valve_controller.client_logic import WatchdogRumbleState
+
+    rumble = WatchdogRumbleState()
+    assert rumble.trigger('lockout', now=100.0)
+
+    assert rumble.output(100.10) == 0.8
+    assert rumble.output(100.55) == 0.0
+    assert rumble.output(100.75) == 0.8
+    assert rumble.output(101.25) == 0.0
+    assert rumble.output(101.45) == 0.8
+    assert rumble.output(101.90) is None
+    assert not rumble.active
+
+
+def test_watchdog_ignores_unknown_events():
+    from obot_valve_controller.client_logic import WatchdogRumbleState
+
+    rumble = WatchdogRumbleState()
+
+    assert not rumble.trigger('elevated_voltage', now=100.0)
+    assert rumble.output(100.0) is None
+    assert not rumble.active
+
+
+def test_watchdog_fault_overrides_valve_rumble(monkeypatch):
+    """Watchdog pulses override active spray-valve vibration."""
+    node = PS4ValveClient()
+    published = []
+    now = [100.0]
+
+    monkeypatch.setattr(time, 'monotonic', lambda: now[0])
+    node._watchdog_rumble.clock = lambda: now[0]
+    monkeypatch.setattr(node, '_publish_rumble', published.append)
+
+    try:
+        node._on_valve_state(SimpleNamespace(data=True))
+        assert published[-1] == 0.5
+
+        node._on_watchdog_event(SimpleNamespace(
+            data='[WARNING] OBot-2: Motor fault. Motion inhibited. '
+                 'Waiting for F1 release.'
+        ))
+
+        for elapsed, expected in [
+            (0.00, 0.8),
+            (0.30, 0.0),
+            (0.50, 0.8),
+            (0.75, 0.0),
+            (1.00, 0.8),
+        ]:
+            now[0] = 100.0 + elapsed
+            node._refresh_rumble()
+            assert published[-1] == expected, (
+                f'At {elapsed:.2f}s: expected {expected}, '
+                f'got {published[-1]}'
+            )
+
+        now[0] = 101.16
+        node._refresh_rumble()
+        assert published[-1] == 0.0
+
+    finally:
+        node.destroy_node()
+
+
+def test_watchdog_rumble_restores_active_valve(monkeypatch):
+    """Resume spray vibration after a watchdog alert finishes."""
+    node = PS4ValveClient()
+    published = []
+    now = [100.0]
+
+    monkeypatch.setattr(time, 'monotonic', lambda: now[0])
+    node._watchdog_rumble.clock = lambda: now[0]
+    monkeypatch.setattr(node, '_publish_rumble', published.append)
+
+    try:
+        node._on_valve_state(SimpleNamespace(data=True))
+        assert published[-1] == 0.5
+
+        node._on_watchdog_event(SimpleNamespace(
+            data='[WARNING] OBot-2: Motor fault. Motion inhibited. '
+                 'Waiting for F1 release.'
+        ))
+
+        now[0] = 100.0
+        node._refresh_rumble()
+        assert published[-1] == 0.8
+
+        # Refresh valve state while the watchdog alert is active.
+        now[0] = 100.90
+        node._on_valve_state(SimpleNamespace(data=True))
+
+        # The fault pattern ends at approximately 1.15 seconds.
+        now[0] = 101.16
+        node._refresh_rumble()
+
+        assert published[-1] == 0.5
+        assert not node._watchdog_rumble.active
+
+    finally:
+        node.destroy_node()
+
+
+def test_watchdog_rumble_stops_on_shutdown(monkeypatch):
+    """Stop PS4 vibration when shutting down during a watchdog alert."""
+    node = PS4ValveClient()
+    published = []
+    now = [100.0]
+
+    monkeypatch.setattr(time, 'monotonic', lambda: now[0])
+    node._watchdog_rumble.clock = lambda: now[0]
+    monkeypatch.setattr(node, '_publish_rumble', published.append)
+
+    try:
+        node._on_watchdog_event(SimpleNamespace(
+            data='[WARNING] OBot-2: Motor fault. Motion inhibited. '
+                 'Waiting for F1 release.'
+        ))
+
+        node._refresh_rumble()
+        assert published[-1] == 0.8
+
+    finally:
+        node.destroy_node()
+
+    assert published[-1] == 0.0
+
+
+def test_watchdog_lockout_priority():
+    """Lower-priority events cannot interrupt a critical lockout."""
+    state = WatchdogRumbleState(clock=lambda: 100.0)
+
+    assert state.trigger('fault', now=100.0)
+    assert state.trigger('lockout', now=100.1)
+    assert state._event == 'lockout'
+
+    assert not state.trigger('fault', now=100.2)
+    assert not state.trigger('recovered', now=100.3)
+    assert state._event == 'lockout'
+
+    # Lockout must retain its original start time.
+    assert state._started == 100.1
+
+    # Lockout ends after 1.9 seconds.
+    assert state.output(now=102.01) is None
+    assert not state.active
+    assert state._event is None
+
+    # New alerts are accepted once the lockout pattern finishes.
+    assert state.trigger('recovered', now=102.1)
+    assert state._event == 'recovered'
+
+
+def test_ps4_client_preserves_critical_lockout():
+    """Watchdog messages cannot downgrade an active critical lockout."""
+    node = PS4ValveClient()
+
+    try:
+        node._on_watchdog_event(SimpleNamespace(
+            data='[CRITICAL] OBot-2: Repeated or persistent motor fault. '
+                 'Automatic recovery disabled.'
+        ))
+        assert node._watchdog_rumble._event == 'lockout'
+
+        started = node._watchdog_rumble._started
+
+        node._on_watchdog_event(SimpleNamespace(
+            data='[WARNING] OBot-2: Motor fault. Motion inhibited. '
+                 'Waiting for F1 release.'
+        ))
+        assert node._watchdog_rumble._event == 'lockout'
+        assert node._watchdog_rumble._started == started
+
+        node._on_watchdog_event(SimpleNamespace(
+            data='[INFO] OBot-2: Both motor controllers recovered. '
+                 'Closed-loop control verified.'
+        ))
+        assert node._watchdog_rumble._event == 'lockout'
+        assert node._watchdog_rumble._started == started
+
     finally:
         node.destroy_node()

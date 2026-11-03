@@ -8,6 +8,7 @@ from action_msgs.msg import GoalStatus
 from obot_valve_controller.client_logic import (
     ButtonEdgeDetector,
     ValveRumbleState,
+    WatchdogRumbleState,
 )
 
 from obot_valve_interfaces.action import SprayValve
@@ -22,9 +23,9 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 
-from sensor_msgs.msg import Joy, JoyFeedback, JoyFeedbackArray
+from sensor_msgs.msg import Joy, JoyFeedback
 
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 
 
 class PS4ValveClient(Node):
@@ -41,6 +42,9 @@ class PS4ValveClient(Node):
         self.declare_parameter('action_name', '/obot/spray')
         self.declare_parameter('valve_state_topic', '/obot/valve/state')
         self.declare_parameter('feedback_topic', '/joy/set_feedback')
+        self.declare_parameter(
+            'watchdog_event_topic', '/obot/watchdog_event'
+        )
         self.declare_parameter('rumble_intensity', 0.5)
         self.declare_parameter('valve_feedback_timeout', 0.6)
         self.declare_parameter('rumble_refresh_period', 0.2)
@@ -91,6 +95,7 @@ class PS4ValveClient(Node):
             self._state_timeout,
             self._rumble_refresh_period,
         )
+        self._watchdog_rumble = WatchdogRumbleState()
         self._action_client = ActionClient(
             self,
             SprayValve,
@@ -109,7 +114,7 @@ class PS4ValveClient(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self._feedback_publisher = self.create_publisher(
-            JoyFeedbackArray,
+            JoyFeedback,
             self._feedback_topic,
             10,
         )
@@ -124,6 +129,12 @@ class PS4ValveClient(Node):
             self._state_topic,
             self._on_valve_state,
             state_qos,
+        )
+        self._watchdog_subscription = self.create_subscription(
+            String,
+            str(self.get_parameter('watchdog_event_topic').value),
+            self._on_watchdog_event,
+            10,
         )
         self._rumble_timer = self.create_timer(
             min(0.05, self._rumble_refresh_period / 2.0),
@@ -295,6 +306,37 @@ class PS4ValveClient(Node):
         self._cancel_pending = False
         self._cancel_requested = False
 
+    def _on_watchdog_event(self, message):
+        """Recognize OBot-2 motor events and trigger alert rumble."""
+        text = message.data
+
+        if text.startswith('[CRITICAL] OBot-2: ') and (
+            'Repeated or persistent motor fault.' in text
+        ):
+            event = 'lockout'
+        elif text.startswith('[WARNING] OBot-2: ') and (
+            'Motion inhibited. Waiting for F1 release.' in text
+            or 'Recovery unsuccessful.' in text
+        ):
+            event = 'fault'
+        elif text.startswith('[INFO] OBot-2: ') and (
+            'Both motor controllers recovered.' in text
+        ):
+            event = 'recovered'
+        else:
+            return
+
+        # Do not let a recovery notification interrupt an active
+        # fault or lockout vibration pattern.
+        if event == 'recovered' and self._watchdog_rumble.active:
+            return
+
+        if not self._watchdog_rumble.trigger(event):
+            return
+        self.get_logger().info(
+            f'Watchdog rumble alert: {event}'
+        )
+
     def _on_valve_state(self, message):
         self._rumble.receive_state(message.data, time.monotonic())
         self._publish_rumble_if_changed()
@@ -303,24 +345,44 @@ class PS4ValveClient(Node):
         self._publish_rumble_if_changed()
 
     def _publish_rumble_if_changed(self):
-        intensity = self._rumble.rumble_output(time.monotonic())
-        if intensity is not None:
-            self._publish_rumble(intensity)
+        now = time.monotonic()
+
+        # Advance valve rumble timing even while watchdog has priority.
+        valve_intensity = self._rumble.rumble_output(now)
+
+        watchdog_was_active = getattr(
+            self, '_watchdog_was_active', False
+        )
+        watchdog_intensity = self._watchdog_rumble.output(now)
+        watchdog_active = self._watchdog_rumble.active
+
+        if watchdog_active:
+            # Publish every timer tick to preserve pulse transitions.
+            self._publish_rumble(watchdog_intensity)
+        elif watchdog_was_active:
+            # Restore valve rumble or explicitly stop the motors.
+            if valve_intensity is None:
+                valve_intensity = (
+                    self._rumble_intensity
+                    if self._rumble._rumbling else 0.0
+                )
+            self._publish_rumble(valve_intensity)
+        elif valve_intensity is not None:
+            self._publish_rumble(valve_intensity)
+
+        self._watchdog_was_active = watchdog_active
 
     def _publish_rumble(self, intensity):
         feedback = JoyFeedback()
         feedback.type = JoyFeedback.TYPE_RUMBLE
         feedback.id = 0
         feedback.intensity = float(intensity)
-        message = JoyFeedbackArray()
-        message.array = [feedback]
-        self._feedback_publisher.publish(message)
+        self._feedback_publisher.publish(feedback)
 
     def destroy_node(self):
-        """Send zero rumble feedback before destroying the node."""
-        intensity = self._rumble.stop(time.monotonic())
-        if intensity is not None:
-            self._publish_rumble(intensity)
+        """Stop all PS4 vibration before destroying the node."""
+        self._rumble.stop(time.monotonic())
+        self._publish_rumble(0.0)
         return super().destroy_node()
 
 

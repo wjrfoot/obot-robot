@@ -87,3 +87,64 @@ class ValveRumbleState:
         self._stopped = True
         self._last_refresh_time = current
         return 0.0 if was_rumbling else None
+
+
+class WatchdogRumbleState:
+    """Generate timed watchdog alerts with priority over valve rumble."""
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self._started = None
+        self._pattern = ()
+        self._intensity = 0.0
+        self._event = None
+
+    def trigger(self, event, now=None):
+        """Start an alert; return False for unrecognized events."""
+        patterns = {
+            'fault': (0.25, 0.20, 3),
+            'recovered': (0.25, 0.0, 1),
+            'lockout': (0.5, 0.2, 3),
+        }
+        if event not in patterns:
+            return False
+
+        # Expire any completed alert before comparing priorities.
+        self.output(now)
+
+        priority = {'recovered': 1, 'fault': 2, 'lockout': 3}
+        if self.active and priority[event] < priority[self._event]:
+            return False
+
+        self._event = event
+        on_time, off_time, count = patterns[event]
+        self._pattern = (on_time, off_time, count)
+        self._started = self.clock() if now is None else now
+        self._intensity = 0.8
+        return True
+
+    def output(self, now=None):
+        """Return current intensity, or None when no alert is active."""
+        if self._started is None:
+            return None
+
+        current = self.clock() if now is None else now
+        on_time, off_time, count = self._pattern
+        elapsed = max(0.0, current - self._started)
+        cycle = on_time + off_time
+        duration = count * on_time + (count - 1) * off_time
+
+        if elapsed >= duration:
+            self._started = None
+            self._event = None
+            return None
+
+        return (
+            self._intensity
+            if elapsed % cycle < on_time
+            else 0.0
+        )
+
+    @property
+    def active(self):
+        return self._started is not None
