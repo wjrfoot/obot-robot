@@ -6,8 +6,8 @@
   <version>0.0.0</version>
   <description>OBot ROS 2 bringup</description>
 
-  <maintainer email="pi@todo.todo">pi</maintainer>
-  <license>TODO: License declaration</license>
+  <maintainer email="research@example.com">SprayBot Research Team</maintainer>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

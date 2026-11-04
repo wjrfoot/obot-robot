@@ -75,6 +75,10 @@ def get_error_request(node_id):
     return arb_id(node_id, CMD_GET_ERROR), b'', True
 
 
+def get_bus_voltage_request(node_id):
+    return arb_id(node_id, CMD_GET_BUS_VOLTAGE_CURRENT), b'', True
+
+
 def clear_errors(node_id):
     return arb_id(node_id, CMD_CLEAR_ERRORS), b'', False
 

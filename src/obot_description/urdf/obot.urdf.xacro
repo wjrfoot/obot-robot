@@ -1,6 +1,9 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="obot">
 
+  <xacro:arg name="use_sim" default="false"/>
+  <xacro:property name="use_sim" value="$(arg use_sim)"/>
+
   <!--
     OBot mobile-base description.
 
@@ -85,6 +88,34 @@
   <xacro:property name="caster_axle_z_from_base" value="${-4.125 * inch}"/>
   <xacro:property name="caster_axle_z_from_pivot" value="${-4.0 * inch}"/>
 
+  <xacro:macro name="box_inertial" params="mass x y z">
+    <inertial>
+      <mass value="${mass}"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia
+        ixx="${mass * (y * y + z * z) / 12.0}"
+        ixy="0"
+        ixz="0"
+        iyy="${mass * (x * x + z * z) / 12.0}"
+        iyz="0"
+        izz="${mass * (x * x + y * y) / 12.0}"/>
+    </inertial>
+  </xacro:macro>
+
+  <xacro:macro name="cylinder_inertial" params="mass radius length">
+    <inertial>
+      <mass value="${mass}"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia
+        ixx="${mass * (3.0 * radius * radius + length * length) / 12.0}"
+        ixy="0"
+        ixz="0"
+        iyy="${mass * (3.0 * radius * radius + length * length) / 12.0}"
+        iyz="0"
+        izz="${mass * radius * radius / 2.0}"/>
+    </inertial>
+  </xacro:macro>
+
   <material name="base_gray">
     <color rgba="0.55 0.55 0.55 1.0"/>
   </material>
@@ -106,6 +137,7 @@
   </joint>
 
   <link name="base_link">
+    <xacro:box_inertial mass="10.0" x="${base_length}" y="${base_width}" z="${base_thickness}"/>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
@@ -127,6 +159,7 @@
 
   <xacro:macro name="drive_wheel" params="side y">
     <link name="${side}_drive_wheel_link">
+      <xacro:cylinder_inertial mass="0.8" radius="${drive_wheel_radius}" length="${drive_wheel_width}"/>
       <visual>
         <!-- Cylinder axis is rotated from Z onto Y. -->
         <origin xyz="0 0 0" rpy="${pi/2.0} 0 0"/>
@@ -160,6 +193,7 @@
 
   <xacro:macro name="caster" params="side y">
     <link name="${side}_caster_swivel_link">
+      <xacro:cylinder_inertial mass="0.2" radius="${0.35 * inch}" length="${0.5 * inch}"/>
       <!-- Simple placeholder visual for the swivel/fork attachment. -->
       <visual>
         <origin xyz="0 0 -${0.25 * inch}" rpy="0 0 0"/>
@@ -178,6 +212,7 @@
     </joint>
 
     <link name="${side}_caster_wheel_link">
+      <xacro:cylinder_inertial mass="0.4" radius="${caster_wheel_radius}" length="${caster_wheel_width}"/>
       <visual>
         <origin xyz="0 0 0" rpy="${pi/2.0} 0 0"/>
         <geometry>
@@ -228,8 +263,31 @@
 
   <xacro:property name="lidar_x" value="${9.25 * inch}"/>
   <xacro:property name="lidar_z" value="${13.375 * inch}"/>
+  <xacro:property name="lidar_mount_width" value="${2.0 * inch}"/>
+  <xacro:property name="lidar_mount_depth" value="${2.0 * inch}"/>
 
-  <link name="laser"/>
+  <link name="laser">
+    <visual>
+      <origin xyz="0 0 ${-lidar_z / 2.0}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${lidar_mount_width} ${lidar_mount_depth} ${lidar_z}"/>
+      </geometry>
+      <material name="base_gray"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${-lidar_z / 2.0}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${lidar_mount_width} ${lidar_mount_depth} ${lidar_z}"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.05" length="0.10"/>
+      </geometry>
+      <material name="base_gray"/>
+    </visual>
+  </link>
 
   <joint name="base_link_to_laser" type="fixed">
     <parent link="base_link"/>
@@ -240,35 +298,78 @@
   <xacro:caster side="left"  y="${ caster_pivot_y}"/>
   <xacro:caster side="right" y="${-caster_pivot_y}"/>
 
-  <ros2_control name="OBotSystem" type="system">
-    <hardware>
-      <plugin>odrive_ros2_control_plugin/ODriveHardwareInterface</plugin>
-      <param name="can">can0</param>
-    </hardware>
+  <xacro:unless value="${use_sim}">
+    <ros2_control name="OBotSystem" type="system">
+      <hardware>
+        <plugin>odrive_ros2_control_plugin/ODriveHardwareInterface</plugin>
+        <param name="can">can0</param>
+      </hardware>
 
-    <joint name="left_drive_wheel_joint">
-      <param name="node_id">61</param>
+      <joint name="left_drive_wheel_joint">
+        <param name="node_id">61</param>
 
-      <command_interface name="velocity"/>
-      <command_interface name="position"/>
-      <command_interface name="effort"/>
+        <command_interface name="velocity"/>
+        <command_interface name="position"/>
+        <command_interface name="effort"/>
 
-      <state_interface name="position"/>
-      <state_interface name="velocity"/>
-      <state_interface name="effort"/>
-    </joint>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
 
-    <joint name="right_drive_wheel_joint">
-      <param name="node_id">62</param>
+      <joint name="right_drive_wheel_joint">
+        <param name="node_id">62</param>
 
-      <command_interface name="velocity"/>
-      <command_interface name="position"/>
-      <command_interface name="effort"/>
+        <command_interface name="velocity"/>
+        <command_interface name="position"/>
+        <command_interface name="effort"/>
 
-      <state_interface name="position"/>
-      <state_interface name="velocity"/>
-      <state_interface name="effort"/>
-    </joint>
-  </ros2_control>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+    </ros2_control>
+  </xacro:unless>
+
+  <xacro:if value="${use_sim}">
+    <gazebo>
+      <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+        <left_joint>left_drive_wheel_joint</left_joint>
+        <right_joint>right_drive_wheel_joint</right_joint>
+        <wheel_separation>0.4699</wheel_separation>
+        <wheel_radius>0.0889</wheel_radius>
+        <topic>/model/obot/cmd_vel</topic>
+        <odom_topic>/model/obot/odometry</odom_topic>
+        <tf_topic>/model/obot/tf</tf_topic>
+        <frame_id>odom</frame_id>
+        <child_frame_id>base_footprint</child_frame_id>
+        <odom_publish_frequency>50</odom_publish_frequency>
+      </plugin>
+    </gazebo>
+
+    <gazebo reference="laser">
+      <sensor name="laser_sensor" type="gpu_lidar">
+        <always_on>true</always_on>
+        <visualize>true</visualize>
+        <update_rate>10</update_rate>
+        <topic>/scan</topic>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>720</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.14159265</min_angle>
+              <max_angle>3.14159265</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.15</min>
+            <max>12.0</max>
+            <resolution>0.01</resolution>
+          </range>
+        </ray>
+      </sensor>
+    </gazebo>
+  </xacro:if>
 
 </robot>

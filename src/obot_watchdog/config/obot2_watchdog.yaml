@@ -13,7 +13,9 @@ obot2_watchdog:
     joy_topic: /joy
     deadman_button: 4            # PS4 F1
 
-    monitor_interval: 2.0
+    monitor_interval: 1.0
+    telemetry_stale_s: 2.0
+    get_error_miss_limit: 5
     observation_window: 60.0     # preliminary, not a validated safety limit
     max_recoveries: 3            # preliminary, not a validated safety limit
 

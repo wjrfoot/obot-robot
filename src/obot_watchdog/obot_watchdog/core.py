@@ -40,8 +40,8 @@ class Config:
     robot_name: str = 'OBot-2'
     left_node_id: int = 61
     right_node_id: int = 62
-    monitor_interval: float = 2.0
-    telemetry_stale_s: float = 1.0
+    monitor_interval: float = 0.5
+    telemetry_stale_s: float = 2.0
     joy_timeout_s: float = 1.0
     observation_window: float = 60.0
     max_recoveries: int = 3
@@ -301,7 +301,8 @@ class Core:
                     'GET_ERROR_NO_RESPONSE', who, False,
                     f'{who} S1 not answering Get_Error'))
             level = self.voltage_level(tel)
-            if level == V_STALE and cfg.require_voltage_telemetry:
+            if (level == V_STALE and cfg.require_voltage_telemetry
+                    and not in_grace):
                 issues.append(Issue(
                     'VOLTAGE_STALE', who, False,
                     f'{who} S1 bus-voltage telemetry missing or stale'))
@@ -352,6 +353,10 @@ class Core:
             can_id, data, rtr = oc.get_error_request(tel.node_id)
             self.actions.append(
                 Frame('get_error', tel.name, can_id, data, rtr, False))
+
+            can_id, data, rtr = oc.get_bus_voltage_request(tel.node_id)
+            self.actions.append(
+                Frame('get_voltage', tel.name, can_id, data, rtr, False))
 
     # ---- main entry ----------------------------------------------------
     def tick(self, now, snap):

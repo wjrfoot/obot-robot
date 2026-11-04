@@ -38,6 +38,7 @@ class Drive:
         self.v = 25.0
         self.responsive = True
         self.answers_get_error = True
+        self.answers_voltage = True
         self.accepts_clear = True
         self.accepts_closed_loop = True
         self.clears = 0
@@ -63,6 +64,7 @@ class Sim:
         self.notes = []
         self.logs = []
         self.pending_ge = []
+        self.pending_voltage = []
         if boot:
             self.advance(self.cfg.startup_grace_s + 2)
             assert not self.core.inhibit
@@ -82,14 +84,17 @@ class Sim:
                     tel.hb_time = self.t
                     tel.hb_error = drive.error
                     tel.hb_state = drive.state
-                    tel.v_time = self.t
-                    tel.v = drive.v
             for drive, tel in self.pending_ge:
                 if drive.responsive and drive.answers_get_error:
                     tel.ge_time = self.t
                     tel.ge_active = drive.error
                     tel.ge_disarm = 0
             self.pending_ge = []
+            for drive, tel in self.pending_voltage:
+                if drive.responsive and drive.answers_voltage:
+                    tel.v_time = self.t
+                    tel.v = drive.v
+            self.pending_voltage = []
             if self.joy_on:
                 self.joy_time = self.t
             snap = Snapshot(
@@ -110,6 +115,8 @@ class Sim:
                 else (self.right, self.rtel)
             if act.label == 'get_error':
                 self.pending_ge.append((drive, tel))
+            elif act.label == 'get_voltage':
+                self.pending_voltage.append((drive, tel))
             elif act.label == 'clear_errors':
                 drive.clears += 1
                 if drive.accepts_clear:
@@ -481,6 +488,67 @@ def test_manual_reset_rejected_outside_lockout():
     ok, _ = sim.core.request_manual_reset(sim.t, Snapshot(
         left=sim.ltel, right=sim.rtel))
     assert not ok
+
+
+
+
+def test_startup_requires_voltage_from_both_controllers():
+    sim = Sim(boot=False)
+
+    # Right S1 continues sending heartbeats and answering Get_Error,
+    # but does not answer voltage requests.
+    sim.right.answers_voltage = False
+
+    sim.advance(2.0)
+
+    assert sim.core.inhibit
+    assert sim.core.startup
+    assert sim.core.state == State.NORMAL
+
+    # Even with fresh voltage from the left controller,
+    # startup must not release the motion inhibit.
+    assert sim.ltel.v_time is not None
+    assert sim.rtel.v_time is None
+
+    sim.advance(5.0)
+
+    assert sim.core.inhibit
+    assert sim.core.state == State.LOCKOUT
+
+
+def test_voltage_requests_sent_to_both_controllers():
+    sim = Sim()
+    voltage_frames = [
+        f for f in sim.frames if f.label == 'get_voltage'
+    ]
+
+    assert voltage_frames
+    assert any(
+        f.node == 'left'
+        and f.can_id == 0x7B7
+        and f.rtr
+        and not f.mutating
+        for f in voltage_frames
+    )
+    assert any(
+        f.node == 'right'
+        and f.can_id == 0x7D7
+        and f.rtr
+        and not f.mutating
+        for f in voltage_frames
+    )
+
+
+def test_voltage_telemetry_remains_fresh_during_normal_operation():
+    sim = Sim()
+    sim.advance(10.0)
+
+    assert sim.core.state == State.NORMAL
+    assert not sim.core.inhibit
+    assert sim.ltel.v == pytest.approx(25.0)
+    assert sim.rtel.v == pytest.approx(25.0)
+    assert sim.t - sim.ltel.v_time < sim.cfg.telemetry_stale_s
+    assert sim.t - sim.rtel.v_time < sim.cfg.telemetry_stale_s
 
 
 # ---- protocol / mocked CAN ------------------------------------------------

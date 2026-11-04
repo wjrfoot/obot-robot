@@ -96,7 +96,8 @@ PARAMS = {
     'dry_run': True,
     'automatic_recovery_enabled': False,
     'recoverable_error_mask': 0x100,
-    'telemetry_stale_s': 1.0,
+    'telemetry_stale_s': 2.0,
+    'get_error_miss_limit': 5,
     'joy_timeout_s': 1.0,
     'require_voltage_telemetry': True,
     'fault_log_path': '~/obot_logs/obot2_watchdog_faults.jsonl',
@@ -120,6 +121,7 @@ class Obot2Watchdog(Node):
             right_node_id=int(p['right_node_id']),
             monitor_interval=float(p['monitor_interval']),
             telemetry_stale_s=float(p['telemetry_stale_s']),
+            get_error_miss_limit=int(p['get_error_miss_limit']),
             joy_timeout_s=float(p['joy_timeout_s']),
             observation_window=float(p['observation_window']),
             max_recoveries=int(p['max_recoveries']),
@@ -262,10 +264,17 @@ class Obot2Watchdog(Node):
 
     def _notify(self, act):
         text = f'[{act.level}] {act.text}'
-        log = (self.get_logger().error if act.level == 'CRITICAL'
-               else self.get_logger().warn if act.level == 'WARNING'
-               else self.get_logger().info)
-        log(text)
+        try:
+            if act.level == 'CRITICAL':
+                self.get_logger().error(text)
+            elif act.level == 'WARNING':
+                self.get_logger().warn(text)
+            else:
+                self.get_logger().info(text)
+        except Exception as exc:
+            print(f'Watchdog notification logging failed: {exc}',
+                  flush=True)
+
         try:
             self.pub_notify.publish(String(data=text))
         except Exception as exc:

@@ -80,6 +80,31 @@ The bringup launches:
 
     ros2 launch obot_bringup obot_control.launch.py
 
+## Gazebo Simulation
+
+Install the ROS 2 Jazzy Gazebo Sim dependencies:
+
+    sudo apt install ros-jazzy-ros-gz-sim ros-jazzy-ros-gz-bridge
+
+Build and launch the robot in the included empty world:
+
+    cd ~/Workspaces/obot-robot
+    source /opt/ros/jazzy/setup.bash
+    colcon build --symlink-install --packages-select obot_description
+    source install/setup.bash
+    ros2 launch obot_description sim.launch.py
+
+Drive it by publishing `geometry_msgs/msg/Twist` on `/model/obot/cmd_vel`.
+The simulated LiDAR publishes `sensor_msgs/msg/LaserScan` on `/scan`.
+
+The maps in `~/maps` can be converted into static Gazebo walls with:
+
+        python3 src/obot_description/tools/map_to_gazebo.py \
+            ~/maps/map.yaml src/obot_description/worlds/map.sdf
+
+The repository includes generated worlds for `map.yaml`, `map2.yaml`, and
+`map3.yaml`. Select one at launch with `map:=map2.sdf` or `map:=map3.sdf`.
+
 ## Git Workflow
 
 Before making changes:
