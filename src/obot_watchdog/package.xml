@@ -3,7 +3,7 @@
 <package format="3">
   <name>obot_watchdog</name>
   <version>0.1.0</version>
-  <description>OBot-2 ODrive S1 fault watchdog with fail-closed motion inhibit.</description>
+  <description>OBot-2 ODrive S1 fault detection and recovery watchdog.</description>
 
   <maintainer email="ros@todo.todo">ros</maintainer>
   <license>Apache-2.0</license>
@@ -11,12 +11,7 @@
   <buildtool_depend>ament_python</buildtool_depend>
 
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>nav_msgs</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
-  <exec_depend>std_srvs</exec_depend>
-  <exec_depend>twist_mux</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 
