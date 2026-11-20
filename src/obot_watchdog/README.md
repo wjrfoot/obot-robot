@@ -1,44 +1,55 @@
 # OBot-2 ODrive S1 watchdog
 
-The watchdog detects S1 faults, records controller diagnostics, attempts
-bounded fault recovery where configured, verifies closed-loop control, and
-logs/notifies the operator. It operates independently of joystick and motion
-control: it does not subscribe to `/joy`, publish velocity commands, or
-control `twist_mux`. The joystick and navigation routes remain owned by the
-existing teleop, navigation, and `twist_mux` components.
+The watchdog detects S1 faults, records controller diagnostics, attempts bounded fault recovery where configured, verifies closed-loop control, and logs/notifies the operator.
 
-The OBot-2 controllers use CAN node IDs 61 (left) and 62 (right) on `can0` at
-1 Mbps. OBot-1's separate watchdog and node IDs are not changed.
+It operates independently of joystick and motion control: it does not subscribe to `/joy`, publish velocity commands, or control `twist_mux`. The joystick and navigation routes remain owned by the existing teleop, navigation, and `twist_mux` components.
+
+The OBot-2 controllers use CAN node IDs 61 (left) and 62 (right) on `can0` at 1 Mbps. OBot-1's separate watchdog and node IDs are not changed.
 
 ## Detection and recovery
 
-The watchdog polls each controller every second for `Get_Error` and bus
-voltage, while receiving heartbeats and checking the CAN link. It records
-controller ID, heartbeat/error details, disarm reason, axis state, bus
-voltage when fresh, CAN state, and timestamp. Notifications are published on
-`/obot/watchdog_event`; the existing laptop notifier continues to display
-them.
+The watchdog polls each controller every second for `Get_Error` and bus voltage, while receiving heartbeats and checking the CAN link.
 
-Automatic recovery is enabled (`dry_run: false`) and bounded to three
-attempts per fault episode, with a five-second retry interval and a
-three-second verification timeout. Only `DC_BUS_OVER_VOLTAGE` (`0x100`) is
-eligible for error clearing. Other active S1 errors are reported and are not
-automatically cleared. For an eligible fault the watchdog sends
-`Clear_Errors`, waits the configured command gap, requests
-`CLOSED_LOOP_CONTROL` (state 8), and requires fresh heartbeat and `Get_Error`
-data showing state 8 and no active/disarm errors. Healthy controllers are
-not sent state-changing commands.
+It records controller ID, heartbeat/error details, disarm reason, axis state, bus voltage when fresh, CAN state, and timestamp. Notifications are published on `/obot/watchdog_event`; the existing laptop notifier continues to display them.
 
-The diagnostic polling loop transmits the left `Get_Error` immediately and
-stages the right request for 50 ms later using a non-blocking ROS timer. A
-10 ms timer checks the deadline. If a second right-side diagnostic arrives
-while one is still queued, the outstanding request is sent immediately and
-the overlap is logged before the new request is scheduled. Shutdown cancels
-the timer and clears its pending request.
+Automatic recovery is enabled (`dry_run: false`) and bounded to three attempts per fault episode, with a five-second retry interval and a three-second verification timeout.
 
-CAN link errors, missing/stale heartbeats, and missing `Get_Error` replies are
-reported as communication faults. Mutating CAN commands are not issued while
-the observed CAN link is not `ERROR-ACTIVE`.
+Only `DC_BUS_OVER_VOLTAGE` (`0x100`) is eligible for error clearing. Other active S1 errors are reported and are not automatically cleared.
+
+For an eligible fault the watchdog sends `Clear_Errors`, waits the configured command gap, requests `CLOSED_LOOP_CONTROL` (state 8), and requires fresh heartbeat and `Get_Error` data showing state 8 and no active/disarm errors. Healthy controllers are not sent state-changing commands.
+
+The diagnostic polling loop transmits the left `Get_Error` immediately and stages the right request for 50 ms later using a non-blocking ROS timer. A 10 ms timer checks the deadline.
+
+If a second right-side diagnostic arrives while one is still queued, the outstanding request is sent immediately and the overlap is logged before the new request is scheduled. Shutdown cancels the timer and clears its pending request.
+
+CAN link errors, missing/stale heartbeats, and missing `Get_Error` replies are reported as communication faults. Mutating CAN commands are not issued while the observed CAN link is not `ERROR-ACTIVE`.
+
+## Diagnostic ROS topics
+
+The watchdog publishes a compact health status and individual bus-voltage measurements.
+
+| Topic | Type | Description |
+|---|---|---|
+| `/obot2/watchdog/state` | `std_msgs/String` | Internal watchdog state |
+| `/obot2/watchdog/health` | `std_msgs/String` | Overall health classification |
+| `/obot2/watchdog/bus_voltage/left` | `std_msgs/Float32` | Left S1 DC bus voltage |
+| `/obot2/watchdog/bus_voltage/right` | `std_msgs/Float32` | Right S1 DC bus voltage |
+| `/obot/watchdog_event` | `std_msgs/String` | Operator notifications |
+
+### Health classifications
+
+`/obot2/watchdog/health` publishes one of four values:
+
+- `NORMAL` — Both controllers have fresh telemetry, the CAN link is healthy, and both controllers are in closed-loop operation without reported errors.
+- `RECOVERING` — At least one controller is undergoing recovery, verification, or retry waiting.
+- `FAULT` — A persistent fault or controller error has been detected.
+- `NO_DATA` — CAN communication or required controller telemetry is unavailable or stale.
+
+A persistent fault takes precedence over the other classifications. Loss of CAN communication or stale required telemetry is reported as `NO_DATA`, rather than being mistaken for a healthy controller.
+
+Bus voltage is published independently for each controller. When voltage telemetry is stale or unavailable, the corresponding `Float32` value is NaN. Consumers should check for NaN rather than treating it as a zero-voltage reading.
+
+These topics provide diagnostic information for monitoring tools and operator displays. They do not control robot motion.
 
 ## Configuration and logs
 
@@ -55,11 +66,9 @@ Important values:
 | `retry_interval_s` | `5.0` s |
 | `dry_run` | `false` |
 
-Fault records are appended to
-`/home/pi/obot_logs/obot2_watchdog_faults.jsonl`. ROS notifications retain
-the `/obot/watchdog_event` topic and tagged `[INFO]`, `[WARNING]`, or
-`[CRITICAL]` messages consumed by `obot-watchdog-notify` on the operator
-laptop. The state summary is published on `/obot2/watchdog/state`.
+Fault records are appended to `/home/pi/obot_logs/obot2_watchdog_faults.jsonl`.
+
+ROS notifications retain the `/obot/watchdog_event` topic and tagged `[INFO]`, `[WARNING]`, or `[CRITICAL]` messages consumed by `obot-watchdog-notify` on the operator laptop.
 
 ## Build and tests
 
@@ -70,18 +79,16 @@ colcon build --packages-select obot_watchdog --symlink-install
 python3 -m pytest src/obot_watchdog/test -q
 ```
 
-Tests use mocked ROS timers and CAN transmission; passing tests do not
-validate hardware safety or the installed S1 firmware configuration.
+Tests use mocked ROS timers and CAN transmission. They cover watchdog behavior, diagnostic scheduling, communication failures, health classification, voltage publication, and recovery-related behavior.
+
+Passing tests do not validate hardware safety or the installed S1 firmware configuration.
 
 ## Deployment
 
-No deployment is performed by this repository change. After review and
-approval, rebuild on the robot and restart `obot2-watchdog.service` to load
-the new watchdog. If the OBot-2 bringup uses `twist_mux_obot2.yaml`, restart
-`obot.service` to load the removal of its obsolete watchdog velocity and lock
-entries. Do not change the normal joystick/navigation routes. Verify actual
-CAN bitrate, node IDs, ODrive error bits, and recovery behavior on a controlled
-bench before enabling operation.
+No deployment is performed by this repository change. After review and approval, rebuild on the robot and restart `obot2-watchdog.service` to load the new watchdog.
 
-The watchdog is diagnostic/recovery support, not an emergency stop. The
-physical E-stop remains the emergency-stop mechanism.
+If the OBot-2 bringup uses `twist_mux_obot2.yaml`, restart `obot.service` to load the removal of its obsolete watchdog velocity and lock entries.
+
+Do not change the normal joystick/navigation routes. Verify actual CAN bitrate, node IDs, ODrive error bits, and recovery behavior on a controlled bench before enabling operation.
+
+The watchdog is diagnostic/recovery support, not an emergency stop. The physical E-stop remains the emergency-stop mechanism.
