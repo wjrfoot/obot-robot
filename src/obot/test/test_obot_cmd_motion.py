@@ -910,12 +910,28 @@ finally:
     assert b'Fatal Python error' not in result.stderr
 
 
-def test_stdin_eof_exits_cleanly(isolated_ros_env):
-    """Closed standard input stops and exits without an input thread."""
-    result = subprocess.run(
-        [sys.executable, '-m', 'obot.obot_cmd_motion'], input=b'',
-        capture_output=True, timeout=10, env=os.environ.copy(),
-    )
-    assert result.returncode == 0, (result.stdout, result.stderr)
-    assert b'context is invalid' not in result.stderr
-    assert b'Fatal Python error' not in result.stderr
+def test_stdin_eof_keeps_controller_running(isolated_ros_env):
+    """Closed stdin must not terminate the systemd motion controller."""
+    with subprocess.Popen(
+        [sys.executable, '-m', 'obot.obot_cmd_motion'],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=os.environ.copy(),
+    ) as process:
+        process.stdin.close()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass  # Expected: controller remains running.
+        else:
+            pytest.fail(
+                f"Controller exited on stdin EOF: {process.returncode}"
+            )
+        finally:
+            process.terminate()
+            try:
+                process.communicate(timeout=5)
+            except (subprocess.TimeoutExpired, ValueError):
+                process.kill()
+                process.wait()

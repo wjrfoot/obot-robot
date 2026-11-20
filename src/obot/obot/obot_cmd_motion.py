@@ -395,7 +395,8 @@ class MotionTest(Node):
             if self.input_buffer:
                 self._parse_input(self.input_buffer)
                 self.input_buffer = ''
-            self.inputs.put(('q', 0.0))
+            # No controlling terminal (e.g. systemd).
+            # Keep ROS services running after stdin closes.
 
     def _parse_input(self, line):
         parts = line.strip().split()
