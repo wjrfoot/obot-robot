@@ -1,0 +1,20 @@
+[Unit]
+Description=OBot ClickDrive Motion Controller
+After=network-online.target obot.service
+Wants=network-online.target
+Requires=obot.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/obot_ws
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/bin/bash -c 'source /opt/ros/jazzy/setup.bash && source /home/pi/obot_ws/install/setup.bash && exec ros2 run obot obot_cmd_motion --ros-args -p cmd_topic:=/cmd_vel_nav'
+Restart=on-failure
+RestartSec=3
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
