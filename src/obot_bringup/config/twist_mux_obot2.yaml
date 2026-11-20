@@ -11,6 +11,11 @@ twist_mux:
         timeout: 0.5
         priority: 100
 
+      motion_test:
+        topic: /cmd_vel_test
+        timeout: 0.5
+        priority: 90
+
       navigation:
         topic: /cmd_vel_nav
         timeout: 0.5

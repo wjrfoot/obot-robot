@@ -80,6 +80,78 @@ The bringup launches:
 
     ros2 launch obot_bringup obot_control.launch.py
 
+## Laptop Motion Test
+
+`obot_cmd_motion` is a terminal diagnostic for comparing commanded dead-reckoning
+with wheel odometry. Run it on `ros-24` after sourcing the ROS 2 Jazzy and OBot
+workspace setup files and joining the same ROS domain/DDS network as `pi-bot-2`:
+
+    cd ~/obot_ws
+    source /opt/ros/jazzy/setup.bash
+    source install/setup.bash
+    ros2 launch obot obot_cmd_motion.launch.py
+
+The launch starts the command node and RViz. The terminal accepts `f N`/`b N`
+for feet, `F N`/`B N` for meters, `r N`/`l N` for degrees, `s` to stop,
+`c`/`z` to clear both paths and reset the origin, `p` to print the comparison,
+`?` for help, and `q` to stop and quit. Ctrl-C also publishes zero commands
+before exit. Optional `linear_speed` and `angular_speed` launch arguments set
+the constant test speeds; the node does not add software acceleration ramps.
+
+On `pi-bot-2`, the running bringup must use
+`twist_mux_obot2.yaml`, which includes `/cmd_vel_test` at priority 90. The
+OBot 2 bringup launch accepts it with
+`twist_mux_config:=twist_mux_obot2.yaml`. The
+watchdog topic and lock retain higher priority, and joystick teleoperation can
+override motion tests. The laptop node observes
+`/diff_drive_controller/cmd_vel` without tracking command sequence numbers.
+Occasional missing or reordered messages do not abort the test; stale odometry
+or mux feedback does stop it and discard queued commands. On reaching the
+requested target it publishes zero, waits for observed zero output, and then
+waits for odometry to settle. This does not bypass or replace the watchdog; a
+higher-priority source may prevent the test node's zero from reaching the
+controller.
+
+The node publishes `/cmd_path`, `/actual_path`, and `/cmd_odom`; it only
+subscribes to `/diff_drive_controller/odom` and does not modify actual
+odometry. The two paths share the current odometry pose and heading whenever
+the test origin is established. RViz uses `odom` as its fixed frame and
+displays the robot description, both paths and commanded odometry. It requires
+the robot's `/robot_description` and valid TF; NaN wheel joint positions can
+prevent the affected wheel transforms from being displayed.
+
+Commanded odometry integrates previously
+observed mux velocities over consecutive local callback execution times,
+measured with a monotonic clock;
+it does not count the time before the first observed output. These local
+callback times are not the middleware arrival, robot forwarding or
+controller-receipt times. Header stamps do not provide the integration time.
+Network delay, executor stalls, batched
+callbacks, unobserved short overrides, and message loss can make
+the estimated trajectory inaccurate; short overrides may be impossible to
+detect from this topic alone. The node integrates output from any mux source
+and cannot identify its publisher or verify that an observed zero came from
+the test command; avoid competing commands during a test. Reaching the target
+and forwarding zero also take time, so
+motion can overshoot. Use this as a diagnostic in an appropriate test area,
+not as a safety controller or closed-loop distance controller.
+For completed tests, logs report the progress at target detection, local time
+to observed zero output, and extra commanded progress. Rotation logs also compare
+the latest received odometry yaw at target detection, zero output and settling.
+These snapshots and their reported ages help distinguish command-side delay
+from subsequent measured rotation; they are not synchronized controller-side
+measurements, and do not by themselves identify its physical cause.
+Target-crossing logs include the previous progress, callback interval and
+callback-to-zero-publication duration. A per-command summary reports maximum
+timer, send, and mux callback gaps and sampled path publication duration with
+history point counts. RViz path messages are published at approximately 2 Hz,
+with at most 500 evenly sampled points each, including the first and latest
+points. Full-resolution history is retained until `c` or `z` resets it; memory
+usage therefore grows with test duration. The former 10,000-point `path_limit`
+cap has been removed. Path publication still runs on the motion executor and
+can delay callbacks; bounded sampling reduces work but is not a real-time
+guarantee.
+
 ## Gazebo Simulation
 
 Install the ROS 2 Jazzy Gazebo Sim dependencies:

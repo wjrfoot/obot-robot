@@ -5,6 +5,7 @@ import threading
 import time
 
 from obot_valve_controller.gpio_backend import create_gpio_output
+from obot_valve_controller.client_logic import MAX_SPRAY_DURATION_SEC
 
 from obot_valve_interfaces.action import SprayValve
 from obot_valve_interfaces.msg import ValveCompletion
@@ -22,9 +23,6 @@ from rclpy.qos import (
 )
 
 from std_msgs.msg import Bool
-
-
-MAX_SPRAY_DURATION_SEC = 300.0
 
 
 class ValveServer(Node):
@@ -165,6 +163,14 @@ class ValveServer(Node):
         if mode not in self._durations:
             self.get_logger().warning(f'Rejecting invalid spray mode {mode}')
             return GoalResponse.REJECT
+        if (
+            not math.isfinite(request.duration_sec)
+            or not 0.0 <= request.duration_sec <= MAX_SPRAY_DURATION_SEC
+        ):
+            self.get_logger().warning(
+                f'Rejecting invalid spray duration {request.duration_sec}'
+            )
+            return GoalResponse.REJECT
 
         with self._lock:
             if self._shutting_down:
@@ -214,7 +220,9 @@ class ValveServer(Node):
 
     def _execute_callback(self, goal_handle):
         mode = int(goal_handle.request.spray_mode)
-        duration = self._durations.get(mode)
+        duration = (
+            goal_handle.request.duration_sec or self._durations.get(mode)
+        )
         outcome = ValveCompletion.ABORTED
         result = SprayValve.Result()
         start_time = None

@@ -19,5 +19,5 @@ ps4_valve_client:
     rumble_refresh_period: 0.2
     circle_button: 1
     square_button: 3
-    triangle_button: -1
+    triangle_button: 2
     cross_button: 0

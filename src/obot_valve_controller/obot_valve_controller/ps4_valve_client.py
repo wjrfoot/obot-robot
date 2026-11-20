@@ -7,6 +7,7 @@ from action_msgs.msg import GoalStatus
 
 from obot_valve_controller.client_logic import (
     ButtonEdgeDetector,
+    MAX_SPRAY_DURATION_SEC,
     ValveRumbleState,
     WatchdogRumbleState,
 )
@@ -50,8 +51,10 @@ class PS4ValveClient(Node):
         self.declare_parameter('rumble_refresh_period', 0.2)
         self.declare_parameter('circle_button', 1)
         self.declare_parameter('square_button', 3)
-        self.declare_parameter('triangle_button', -1)
+        self.declare_parameter('triangle_button', 2)
         self.declare_parameter('cross_button', 0)
+        for name in ('circle', 'square', 'triangle'):
+            self.declare_parameter(f'{name}_duration_sec', -1.0)
 
         self._joy_topic = str(self.get_parameter('joy_topic').value)
         self._state_topic = str(
@@ -70,6 +73,17 @@ class PS4ValveClient(Node):
             self.get_parameter('rumble_refresh_period').value
         )
         self._validate_parameters()
+        self._durations = {}
+        for name in ('circle', 'square', 'triangle'):
+            duration = float(self.get_parameter(f'{name}_duration_sec').value)
+            if not math.isfinite(duration) or not (
+                duration == -1.0 or 0.0 <= duration <= MAX_SPRAY_DURATION_SEC
+            ):
+                raise ValueError(
+                    f'{name}_duration_sec must be -1 (server default), '
+                    f'or between 0 and {MAX_SPRAY_DURATION_SEC} seconds'
+                )
+            self._durations[name] = duration
 
         button_indices = {
             'circle': int(self.get_parameter('circle_button').value),
@@ -85,11 +99,11 @@ class PS4ValveClient(Node):
         self._button_edges = ButtonEdgeDetector(button_indices)
         if any(
             button_indices[name] < 0
-            for name in ('circle', 'square', 'cross')
+            for name in ('circle', 'square', 'triangle', 'cross')
         ):
             self.get_logger().warning(
                 'One or more required PS4 buttons are unconfigured; '
-                'check circle_button, square_button, and cross_button'
+                'check circle, square, triangle, and cross button indices'
             )
 
         self._rumble = ValveRumbleState(
@@ -191,11 +205,11 @@ class PS4ValveClient(Node):
             ('triangle', 2),
         )
         for name, mode in modes:
-            if name in edges:
-                self._start_spray(mode)
+            if name in edges and self._durations[name] != 0.0:
+                self._start_spray(mode, self._durations[name])
                 break
 
-    def _start_spray(self, mode):
+    def _start_spray(self, mode, duration):
         if self._active:
             return
         if not self._action_client.server_is_ready():
@@ -206,6 +220,7 @@ class PS4ValveClient(Node):
 
         goal = SprayValve.Goal()
         goal.spray_mode = mode
+        goal.duration_sec = max(0.0, duration)
         self._active = True
         self._goal_handle = None
         self._cancel_pending = False

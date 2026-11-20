@@ -5,6 +5,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
+from action_msgs.msg import GoalStatus
+
 from obot_valve_controller.client_logic import (
     ButtonEdgeDetector,
     ValveRumbleState,
@@ -23,7 +25,12 @@ from obot_valve_interfaces.msg import ValveCompletion
 import pytest
 
 import rclpy
-from rclpy.action import GoalResponse
+from rclpy.action import (
+    GoalResponse,
+    get_action_client_names_and_types_by_node,
+    get_action_server_names_and_types_by_node,
+)
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.parameter import Parameter
 
 
@@ -40,9 +47,9 @@ def ros_context():
 class FakeGoalHandle:
     """Provide the goal-handle surface needed by the execute callback."""
 
-    def __init__(self, mode, feedback_exception=None):
+    def __init__(self, mode, feedback_exception=None, duration=0.0):
         """Initialize a fake handle for the requested spray mode."""
-        self.request = SimpleNamespace(spray_mode=mode)
+        self.request = SimpleNamespace(spray_mode=mode, duration_sec=duration)
         self.is_cancel_requested = False
         self.feedback = []
         self.terminal_state = None
@@ -109,6 +116,30 @@ def test_timed_spray_uses_mode_duration_and_completes_once(monkeypatch):
         assert not gpio.is_open
         assert completions == [(1, ValveCompletion.SUCCEEDED,
                                 result.actual_duration)]
+    finally:
+        tear_down_node(node)
+
+
+def test_timed_spray_uses_requested_duration():
+    """A goal override is enforced by the server, not a client timer."""
+    node, gpio = make_server(duration=0.08)
+    try:
+        result = node._execute_callback(FakeGoalHandle(0, duration=0.14))
+        assert result.completed
+        assert result.actual_duration >= 0.14
+        assert not gpio.is_open
+    finally:
+        tear_down_node(node)
+
+
+@pytest.mark.parametrize('duration', [-1.0, 301.0, float('nan'), float('inf')])
+def test_server_rejects_invalid_duration_without_reserving_goal(duration):
+    """Reject malformed or excessive durations before reserving the valve."""
+    node, _gpio = make_server()
+    try:
+        request = SprayValve.Goal(spray_mode=0, duration_sec=duration)
+        assert node._goal_callback(request) == GoalResponse.REJECT
+        assert not node._reserved
     finally:
         tear_down_node(node)
 
@@ -320,6 +351,95 @@ def test_client_ignores_spray_buttons_while_goal_is_active(monkeypatch):
         node.destroy_node()
 
 
+@pytest.mark.parametrize(
+    ('button', 'mode', 'duration'),
+    [(1, 0, 1.25), (3, 1, 2.5), (2, 2, 3.75)],
+)
+def test_client_sends_each_button_duration(monkeypatch, button, mode, duration):
+    """Each PS4 spray button sends its own duration in the action goal."""
+    parameters = [
+        Parameter('circle_duration_sec', value=1.25),
+        Parameter('square_duration_sec', value=2.5),
+        Parameter('triangle_duration_sec', value=3.75),
+    ]
+    node = PS4ValveClient(parameter_overrides=parameters)
+    sent = []
+
+    class FakeFuture:
+        def add_done_callback(self, callback):
+            self.callback = callback
+
+    class FakeActionClient:
+        def server_is_ready(self):
+            return True
+
+        def send_goal_async(self, goal):
+            sent.append(goal)
+            return FakeFuture()
+
+    monkeypatch.setattr(node, '_action_client', FakeActionClient())
+    try:
+        buttons = [0, 0, 0, 0]
+        buttons[button] = 1
+        node._on_joy(SimpleNamespace(buttons=buttons))
+        assert len(sent) == 1
+        assert sent[0].spray_mode == mode
+        assert sent[0].duration_sec == duration
+        node._on_joy(SimpleNamespace(buttons=[0, 1, 1, 1]))
+        assert len(sent) == 1
+    finally:
+        node.destroy_node()
+
+
+def test_zero_duration_disables_button(monkeypatch):
+    """A zero-duration tank launch parameter does not send a goal."""
+    node = PS4ValveClient(parameter_overrides=[
+        Parameter('circle_duration_sec', value=0.0),
+    ])
+    starts = []
+    monkeypatch.setattr(node, '_start_spray', lambda *args: starts.append(args))
+    try:
+        node._on_joy(SimpleNamespace(buttons=[0, 1, 0, 0]))
+        assert starts == []
+    finally:
+        node.destroy_node()
+
+
+def test_default_client_uses_server_duration(monkeypatch):
+    """Existing mode-only behavior remains the default outside tank launch."""
+    node = PS4ValveClient()
+    starts = []
+    monkeypatch.setattr(node, '_start_spray', lambda *args: starts.append(args))
+    try:
+        node._on_joy(SimpleNamespace(buttons=[0, 0, 1, 0]))
+        assert starts == [(2, -1.0)]
+    finally:
+        node.destroy_node()
+
+
+@pytest.mark.parametrize('duration', [-2.0, 301.0, float('nan'), float('inf')])
+def test_client_rejects_invalid_duration(duration):
+    """Invalid launch duration values fail at client startup."""
+    with pytest.raises(ValueError, match='circle_duration_sec'):
+        PS4ValveClient(parameter_overrides=[
+            Parameter('circle_duration_sec', value=duration),
+        ])
+
+
+def test_client_rumble_follows_open_and_closed_state(monkeypatch):
+    """Valve state stops rumble after completion or cancellation."""
+    node = PS4ValveClient()
+    published = []
+    monkeypatch.setattr(node, '_publish_rumble', published.append)
+    try:
+        node._on_valve_state(SimpleNamespace(data=True))
+        assert published[-1] == 0.5
+        node._on_valve_state(SimpleNamespace(data=False))
+        assert published[-1] == 0.0
+    finally:
+        node.destroy_node()
+
+
 def test_cross_requests_cancel_while_waiting_for_goal_acceptance():
     """Remember Cross cancellation while waiting for goal acceptance."""
     parameters = [
@@ -336,6 +456,77 @@ def test_cross_requests_cancel_while_waiting_for_goal_acceptance():
         assert node._active
     finally:
         node.destroy_node()
+
+
+def test_real_action_client_completes_and_cancels_with_mock_gpio(monkeypatch):
+    """Exercise the action, valve-state topic, and rumble without hardware."""
+    server, gpio = make_server(duration=0.1)
+    client = PS4ValveClient(parameter_overrides=[
+        Parameter('circle_duration_sec', value=0.25),
+        Parameter('square_duration_sec', value=1.5),
+        Parameter('triangle_duration_sec', value=0.4),
+    ])
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(server)
+    executor.add_node(client)
+    rumble = []
+    monkeypatch.setattr(client, '_publish_rumble', rumble.append)
+    statuses = []
+    on_result = client._on_result
+
+    def record_result(future):
+        statuses.append(future.result().status)
+        on_result(future)
+
+    monkeypatch.setattr(client, '_on_result', record_result)
+
+    def wait_for(predicate, timeout=4.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        pytest.fail('Timed out waiting for ROS action or valve state')
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            spinning = pool.submit(executor.spin)
+            try:
+                wait_for(client._action_client.server_is_ready)
+                wait_for(lambda: any(
+                    name == '/obot/spray'
+                    for name, _ in get_action_client_names_and_types_by_node(
+                        server, client.get_name(), client.get_namespace())))
+                wait_for(lambda: any(
+                    name == '/obot/spray'
+                    for name, _ in get_action_server_names_and_types_by_node(
+                        client, server.get_name(), server.get_namespace())))
+                client._on_joy(SimpleNamespace(buttons=[0, 1, 0, 0]))
+                wait_for(lambda: gpio.is_open and 0.5 in rumble)
+                started = time.monotonic()
+                wait_for(lambda: not client._active and not gpio.is_open)
+                wait_for(lambda: rumble and rumble[-1] == 0.0)
+                assert time.monotonic() - started >= 0.1
+                assert statuses == [GoalStatus.STATUS_SUCCEEDED]
+
+                client._on_joy(SimpleNamespace(buttons=[0, 0, 0, 0]))
+                client._on_joy(SimpleNamespace(buttons=[0, 0, 0, 1]))
+                wait_for(lambda: gpio.is_open and client._goal_handle is not None)
+                wait_for(lambda: rumble[-1] == 0.5)
+                canceled_at = time.monotonic()
+                client._on_joy(SimpleNamespace(buttons=[1, 0, 0, 0]))
+                wait_for(lambda: not client._active and not gpio.is_open)
+                wait_for(lambda: rumble[-1] == 0.0)
+                assert time.monotonic() - canceled_at < 1.0
+                assert statuses[-1] == GoalStatus.STATUS_CANCELED
+            finally:
+                executor.shutdown()
+                spinning.result(timeout=3.0)
+    finally:
+        executor.remove_node(client)
+        executor.remove_node(server)
+        client.destroy_node()
+        server.destroy_node()
 
 
 def test_watchdog_fault_rumble_pattern():

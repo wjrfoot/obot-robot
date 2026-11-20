@@ -7,9 +7,9 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Float32, String
 
-from . import can_io
+from . import can_io, odrive_can
 from .core import Config, Core, Frame, Log, Notify, Snapshot
 
 
@@ -90,6 +90,13 @@ class Obot2Watchdog(Node):
             String, self.p['notification_topic'], 10)
         self.pub_state = self.create_publisher(
             String, '/obot2/watchdog/state', 10)
+        self.pub_health = self.create_publisher(
+            String, '/obot2/watchdog/health', 10)
+        self.pub_voltage = {
+            side: self.create_publisher(
+                Float32, f'/obot2/watchdog/bus_voltage/{side}', 10)
+            for side in ('left', 'right')
+        }
 
         try:
             self.can.start()
@@ -127,6 +134,35 @@ class Obot2Watchdog(Node):
 
     def _publish_state(self):
         self.pub_state.publish(String(data=self.core.state.value))
+        now = time.monotonic()
+        snapshot = self._snapshot()
+
+        def fresh(stamp):
+            return (stamp is not None
+                    and 0 <= now - stamp <= self.cfg.telemetry_stale_s)
+
+        for tel in snapshot.nodes():
+            voltage = (tel.v if fresh(tel.v_time) and tel.v is not None
+                       else float('nan'))
+            self.pub_voltage[tel.name].publish(Float32(data=voltage))
+
+        phase = self.core.state.value
+        if phase == 'PERSISTENT':
+            health = 'FAULT'
+        elif (snapshot.can_state != 'ERROR-ACTIVE'
+              or not fresh(snapshot.can_time)
+              or any(not fresh(tel.hb_time) or not fresh(tel.ge_time)
+                     for tel in snapshot.nodes())):
+            health = 'NO_DATA'
+        elif phase in {'RECOVERING', 'VERIFYING', 'RETRY_WAIT'}:
+            health = 'RECOVERING'
+        elif any(tel.hb_state != odrive_can.AXIS_STATE_CLOSED_LOOP
+                 or tel.hb_error or tel.ge_active
+                 or tel.ge_disarm for tel in snapshot.nodes()):
+            health = 'FAULT'
+        else:
+            health = 'NORMAL'
+        self.pub_health.publish(String(data=health))
 
     def _execute(self, action):
         if isinstance(action, Notify):

@@ -1,9 +1,9 @@
 from launch import LaunchDescription
-from launch.substitutions import Command, PathJoinSubstitution
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
-from launch.actions import IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 def generate_launch_description():
@@ -100,7 +100,22 @@ def generate_launch_description():
         ],
     )
 
+    path_recorder = Node(
+        package="obot",
+        executable="obot_path_recorder",
+        name="obot_path_recorder",
+        output="screen",
+        parameters=[LaunchConfiguration("path_recorder_config")],
+    )
+
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "path_recorder_config",
+            default_value=PathJoinSubstitution([
+                bringup_share, "config", "path_recorder.yaml",
+            ]),
+            description="ROS parameters file for the odometry path recorder",
+        ),
         robot_state_publisher,
         controller_manager,
         joint_state_broadcaster_spawner,
@@ -108,4 +123,5 @@ def generate_launch_description():
 #        cameras,
 #        lidar,
         twist_mux,
+        path_recorder,
     ])

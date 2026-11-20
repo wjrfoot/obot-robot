@@ -4,6 +4,9 @@ import time
 from dataclasses import dataclass
 
 
+MAX_SPRAY_DURATION_SEC = 300.0
+
+
 class ButtonEdgeDetector:
     """Report only newly pressed buttons for configured zero-based indices."""
 

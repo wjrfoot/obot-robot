@@ -12,7 +12,7 @@ import rclpy  # noqa: E402
 from rclpy.parameter import Parameter  # noqa: E402
 
 from obot_watchdog import node as watchdog_node  # noqa: E402
-from obot_watchdog.core import Frame, NodeTel, Notify, CRITICAL  # noqa: E402
+from obot_watchdog.core import Frame, NodeTel, Notify, CRITICAL, State  # noqa: E402
 from obot_watchdog.node import (  # noqa: E402
     DIAGNOSTIC_STAGGER_S, DIAGNOSTIC_TIMER_PERIOD_S, Obot2Watchdog,
 )
@@ -129,6 +129,43 @@ def test_configuration_preserves_polling_and_recovery_defaults(node):
     assert node.dry_run is False
     assert node.cfg.max_recoveries == 3
     assert node.cfg.retry_interval_s == 5.0
+
+
+def test_health_and_voltage_publication(node, monkeypatch):
+    clock = SimpleNamespace(monotonic=lambda: 10.0)
+    monkeypatch.setattr(watchdog_node, 'time', clock)
+    node.pub_state = Recorder()
+    node.pub_health = Recorder()
+    node.pub_voltage = {'left': Recorder(), 'right': Recorder()}
+    left = node.can.left
+    right = node.can.right
+    for tel in (left, right):
+        tel.hb_time = tel.ge_time = 9.5
+        tel.hb_state = watchdog_node.odrive_can.AXIS_STATE_CLOSED_LOOP
+    left.v, left.v_time = 18.5, 9.5
+    right.v, right.v_time = 19.0, 7.0
+    node.can.snapshot_nodes = lambda: (left, right, 'ERROR-ACTIVE', 9.5, 1)
+
+    node._publish_state()
+    assert node.pub_health.msgs[-1].data == 'NORMAL'
+    assert node.pub_voltage['left'].msgs[-1].data == pytest.approx(18.5)
+    assert node.pub_voltage['right'].msgs[-1].data != (
+        node.pub_voltage['right'].msgs[-1].data)
+
+    right.ge_time = None
+    node._publish_state()
+    assert node.pub_health.msgs[-1].data == 'NO_DATA'
+    right.ge_time = 9.5
+    right.hb_error = 1
+    node._publish_state()
+    assert node.pub_health.msgs[-1].data == 'FAULT'
+    right.hb_error = 0
+    node.core._controllers['left'].phase = State.RECOVERING
+    node._publish_state()
+    assert node.pub_health.msgs[-1].data == 'RECOVERING'
+    node.core._controllers['left'].phase = State.PERSISTENT
+    node._publish_state()
+    assert node.pub_health.msgs[-1].data == 'FAULT'
 
 
 def test_watchdog_has_no_joystick_or_velocity_interfaces(node):

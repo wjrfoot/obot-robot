@@ -1,4 +1,6 @@
 uint8 spray_mode
+# Zero uses the server's configured duration for this mode.
+float32 duration_sec
 ---
 bool completed
 bool canceled

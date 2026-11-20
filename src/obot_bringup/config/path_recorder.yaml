@@ -1,0 +1,8 @@
+obot_path_recorder:
+  ros__parameters:
+    odom_topic: /diff_drive_controller/odom
+    path_topic: /obot/path
+    minimum_distance_m: 0.05
+    minimum_angle_rad: 0.15
+    max_points: 10000
+    publish_rate_hz: 2.0
