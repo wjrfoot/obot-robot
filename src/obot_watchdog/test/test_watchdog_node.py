@@ -1,5 +1,6 @@
 """ROS wrapper tests with mocked timers and CAN transport."""
 
+import math
 import os
 from types import SimpleNamespace
 
@@ -149,8 +150,7 @@ def test_health_and_voltage_publication(node, monkeypatch):
     node._publish_state()
     assert node.pub_health.msgs[-1].data == 'NORMAL'
     assert node.pub_voltage['left'].msgs[-1].data == pytest.approx(18.5)
-    assert node.pub_voltage['right'].msgs[-1].data != (
-        node.pub_voltage['right'].msgs[-1].data)
+    assert math.isnan(node.pub_voltage['right'].msgs[-1].data)
 
     right.ge_time = None
     node._publish_state()
@@ -166,6 +166,39 @@ def test_health_and_voltage_publication(node, monkeypatch):
     node.core._controllers['left'].phase = State.PERSISTENT
     node._publish_state()
     assert node.pub_health.msgs[-1].data == 'FAULT'
+
+    node.core._controllers['left'].phase = State.NORMAL
+    node._publish_state()
+    assert node.pub_health.msgs[-1].data == 'NORMAL'
+
+
+@pytest.mark.parametrize('can_state', [
+    'ERROR-WARNING',
+    'ERROR-PASSIVE',
+    'BUS-OFF',
+])
+def test_can_communication_loss_reports_no_data(
+        node, monkeypatch, can_state):
+    clock = SimpleNamespace(monotonic=lambda: 10.0)
+    monkeypatch.setattr(watchdog_node, 'time', clock)
+
+    node.pub_state = Recorder()
+    node.pub_health = Recorder()
+    node.pub_voltage = {'left': Recorder(), 'right': Recorder()}
+
+    left = node.can.left
+    right = node.can.right
+
+    for tel in (left, right):
+        tel.hb_time = tel.ge_time = 9.5
+        tel.hb_state = watchdog_node.odrive_can.AXIS_STATE_CLOSED_LOOP
+
+    node.can.snapshot_nodes = lambda: (
+        left, right, can_state, 9.5, 1)
+
+    node._publish_state()
+
+    assert node.pub_health.msgs[-1].data == 'NO_DATA'
 
 
 def test_watchdog_has_no_joystick_or_velocity_interfaces(node):
