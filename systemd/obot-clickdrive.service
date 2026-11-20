@@ -9,6 +9,9 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/obot_ws
 Environment=PYTHONUNBUFFERED=1
+Environment=ROS_DOMAIN_ID=5
+Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+Environment=CYCLONEDDS_URI=file:///home/pi/cyclonedds_obot.xml
 ExecStart=/bin/bash -c 'source /opt/ros/jazzy/setup.bash && source /home/pi/obot_ws/install/setup.bash && exec ros2 run obot obot_cmd_motion --ros-args -p cmd_topic:=/cmd_vel_nav'
 Restart=on-failure
 RestartSec=3
