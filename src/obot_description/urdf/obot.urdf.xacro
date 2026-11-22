@@ -246,23 +246,26 @@
   <!--
     LiDAR position:
       Centered laterally between drive wheels.
-      3.0 in forward of drive axle.
-      20.0 in above floor.
+      4.0 in forward of drive axle.
+      7.0 in above floor.
 
     Drive axle X relative to base_link:
       6.25 in
 
     Therefore LiDAR X:
-      6.25 + 3.0 = 9.25 in
+      6.25 + 4.0 = 10.25 in
 
     base_link is 6.625 in above floor.
 
     Therefore LiDAR Z relative to base_link:
-      20.0 - 6.625 = 13.375 in
+      7.0 - 6.625 = 0.375 in
+
+    The scan's zero-angle direction is assumed to point right, with the cable
+    outlet at 180 degrees; verify the orientation when running the LiDAR.
   -->
 
-  <xacro:property name="lidar_x" value="${9.25 * inch}"/>
-  <xacro:property name="lidar_z" value="${13.375 * inch}"/>
+  <xacro:property name="lidar_x" value="${10.25 * inch}"/>
+  <xacro:property name="lidar_z" value="${0.375 * inch}"/>
   <xacro:property name="lidar_mount_width" value="${2.0 * inch}"/>
   <xacro:property name="lidar_mount_depth" value="${2.0 * inch}"/>
 
