@@ -284,6 +284,8 @@ class MotionTest(Node):
             ('mux_output_topic', '/diff_drive_controller/cmd_vel'),
             ('linear_speed', 0.20),
             ('angular_speed', 0.35),
+            ('max_viewer_linear_speed', 0.20),
+            ('max_viewer_angular_speed', 0.35),
             ('odom_timeout_s', 1.0),
             ('mux_output_timeout_s', 0.5),
             ('stop_linear_tolerance', 0.015),
@@ -299,6 +301,14 @@ class MotionTest(Node):
 
         self.linear_speed = float(param('linear_speed'))
         self.angular_speed = float(param('angular_speed'))
+        self.max_viewer_linear_speed = float(param('max_viewer_linear_speed'))
+        self.max_viewer_angular_speed = float(param('max_viewer_angular_speed'))
+        self.command_linear_speed = self.linear_speed
+        self.command_angular_speed = self.angular_speed
+        self.viewer_sequences = {}
+        self.manual_owner = None
+        self.manual_deadline = 0.0
+        self.manual_velocity = (0.0, 0.0)
         self.odom_timeout = float(param('odom_timeout_s'))
         self.mux_output_timeout = float(param('mux_output_timeout_s'))
         self.stop_v = float(param('stop_linear_tolerance'))
@@ -307,6 +317,7 @@ class MotionTest(Node):
         self.settle_timeout = float(param('settle_timeout_s'))
         positive = (
             self.linear_speed, self.angular_speed, self.odom_timeout,
+            self.max_viewer_linear_speed, self.max_viewer_angular_speed,
             self.mux_output_timeout,
             self.stop_v, self.stop_w, self.stop_hold, self.settle_timeout,
         )
@@ -651,6 +662,18 @@ class MotionTest(Node):
         """Handle camera-directed rotation and cancellation."""
         command = request.command.strip().upper()
 
+        if request.client_id:
+            now_ros = self.get_clock().now().nanoseconds * 1e-9
+            deadline = request.deadline_ros_s
+            previous = self.viewer_sequences.get(request.client_id, 0)
+            if (not math.isfinite(deadline) or deadline < now_ros
+                    or deadline > now_ros + 1.0 or request.sequence <= previous):
+                response.accepted = False
+                response.state = self.state
+                response.message = 'Expired or out-of-order viewer request'
+                return response
+            self.viewer_sequences[request.client_id] = request.sequence
+
         if command == 'STATUS':
             response.accepted = True
             response.state = self.state
@@ -659,10 +682,81 @@ class MotionTest(Node):
             return response
 
         if command == 'STOP':
+            self.manual_owner = None
+            self.manual_velocity = (0.0, 0.0)
             self._stop()
             response.accepted = True
             response.state = self.state
             response.message = 'Motion stopped and queue cleared'
+            return response
+
+        if command == 'MANUAL_END':
+            if request.client_id and self.manual_owner in (None, request.client_id):
+                self.manual_owner = None
+                self.manual_velocity = (0.0, 0.0)
+                self._stop()
+                response.accepted = True
+                response.message = 'Manual motion stopped'
+            else:
+                response.accepted = False
+                response.message = 'Manual ownership not held'
+            response.state = self.state
+            return response
+
+        if command == 'MANUAL_BEGIN':
+            if not request.client_id or (
+                    self.manual_owner is not None
+                    and self.manual_owner != request.client_id):
+                response.accepted = False
+                response.state = self.state
+                response.message = 'Manual ownership unavailable'
+                return response
+            self._stop()
+            while not self.inputs.empty():
+                self.inputs.get_nowait()
+            self.manual_owner = request.client_id
+            self.manual_deadline = time.monotonic() + 0.3
+            self.manual_velocity = (0.0, 0.0)
+            response.accepted = True
+            response.state = 'manual'
+            response.message = 'Click motion canceled; manual ownership granted'
+            return response
+
+        if command == 'MANUAL':
+            if (not request.client_id or self.manual_owner != request.client_id
+                    or time.monotonic() > self.manual_deadline
+                    or self._manual_active()
+                    or not self._fresh_odom()):
+                response.accepted = False
+                response.state = self.state
+                response.message = 'Manual ownership or motion prerequisites unavailable'
+                return response
+            if ((request.linear_direction, request.angular_direction)
+                    not in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                response.accepted = False
+                response.state = self.state
+                response.message = 'Invalid manual direction'
+                return response
+            speeds = (request.linear_speed_mps, request.angular_speed_rps)
+            if not all(math.isfinite(speed) and speed > 0 for speed in speeds):
+                response.accepted = False
+                response.state = self.state
+                response.message = 'Invalid manual speed'
+                return response
+            self.manual_velocity = (
+                request.linear_direction * min(speeds[0], self.max_viewer_linear_speed),
+                request.angular_direction * min(speeds[1], self.max_viewer_angular_speed))
+            self.manual_deadline = time.monotonic() + min(
+                0.3, max(0.0, deadline - now_ros))
+            response.accepted = True
+            response.state = 'manual'
+            response.message = 'Manual command accepted'
+            return response
+
+        if self.manual_owner is not None:
+            response.accepted = False
+            response.state = self.state
+            response.message = 'Manual control owns the motion controller'
             return response
 
         if self._manual_active():
@@ -711,6 +805,19 @@ class MotionTest(Node):
             response.message = 'Odometry unavailable or robot moving'
             return response
 
+        speeds = (request.linear_speed_mps, request.angular_speed_rps)
+        if any(speeds):
+            if not all(math.isfinite(speed) and speed > 0 for speed in speeds):
+                response.accepted = False
+                response.state = self.state
+                response.message = 'Invalid requested speed'
+                return response
+            self.command_linear_speed = min(speeds[0], self.max_viewer_linear_speed)
+            self.command_angular_speed = min(speeds[1], self.max_viewer_angular_speed)
+        else:
+            self.command_linear_speed = self.linear_speed
+            self.command_angular_speed = self.angular_speed
+
         if command == 'TURN':
             direction = 'r' if magnitude > 0 else 'l'
             magnitude = abs(magnitude)
@@ -757,7 +864,12 @@ class MotionTest(Node):
                 else:
                     self._reset_origin()
             else:
-                self.pending.append((command, magnitude))
+                if self.manual_owner is None:
+                    self.command_linear_speed = self.linear_speed
+                    self.command_angular_speed = self.angular_speed
+                    self.pending.append((command, magnitude))
+                else:
+                    self.get_logger().warning('Manual control owns motion; ignoring CLI command')
 
     def _start_next(self):
         if not self.pending or not self._fresh_odom() or not self._stopped():
@@ -842,7 +954,13 @@ class MotionTest(Node):
             self.get_logger().error(
                 'Odometry stale: stopping and discarding queued commands')
             self._stop()
-        if self.state == 'idle':
+        if self.manual_owner is not None and (
+                now > self.manual_deadline or self._manual_active()
+                or not self._fresh_odom()):
+            self.manual_owner = None
+            self.manual_velocity = (0.0, 0.0)
+            self._stop()
+        if self.state == 'idle' and self.manual_owner is None:
             self._start_next()
 
         linear = angular = 0.0
@@ -854,13 +972,15 @@ class MotionTest(Node):
         if self.state == 'moving':
             command, _, _ = self.active
             if command in ('r', 'l'):
-                angular = rotation_sign(command) * self.angular_speed
+                angular = rotation_sign(command) * self.command_angular_speed
             elif command in ('b', 'B'):
-                linear = -self.linear_speed
+                linear = -self.command_linear_speed
             else:
-                linear = self.linear_speed
+                linear = self.command_linear_speed
         elif self.state == 'settling':
             self._finish_settling(now)
+        elif self.manual_owner is not None:
+            linear, angular = self.manual_velocity
 
         self._publish_cmd(linear, angular)
         self._publish_state(*self.observed_velocity)

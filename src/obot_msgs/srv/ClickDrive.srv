@@ -1,0 +1,25 @@
+# Commands: TURN, DRIVE, STOP, STATUS, MANUAL_BEGIN, MANUAL, MANUAL_END
+string command
+
+# TURN: positive = right, negative = left (degrees)
+float64 angle_deg
+
+# DRIVE: positive forward distance (meters)
+float64 distance_m
+
+# TURN/DRIVE and MANUAL speed limits, frozen for each requested motion.
+float64 linear_speed_mps
+float64 angular_speed_rps
+
+# Viewer instance and monotonically increasing request sequence.
+string client_id
+uint64 sequence
+float64 deadline_ros_s
+
+# MANUAL: -1, 0, or 1 for the requested linear and angular directions.
+int8 linear_direction
+int8 angular_direction
+---
+bool accepted
+string state
+string message

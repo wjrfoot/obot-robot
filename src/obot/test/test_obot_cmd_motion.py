@@ -203,6 +203,9 @@ def fake_motion_node():
     history.clear((0.0, 0.0, 0.0))
     node = SimpleNamespace(
         state='moving',
+        manual_owner=None,
+        command_linear_speed=0.2,
+        command_angular_speed=0.35,
         active=('F', 0.015, 0.015),
         progress=0.0,
         timing=motion.TimingDiagnostics(),
