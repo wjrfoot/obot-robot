@@ -80,6 +80,23 @@ The bringup launches:
 
     ros2 launch obot_bringup obot_control.launch.py
 
+## Deferred Investigation: OBot-2 Startup Failure
+
+On 2026-11-23, an OBot-2 startup failure showed the following:
+
+- The CAN interface was ERROR-PASSIVE with a TX error counter of 128 and no
+  successful packet exchanges. Its parent device was `spi1.0`.
+- Both wheel positions were NaN, causing automatic deactivation of the
+  differential drive controller.
+- A reboot followed by a complete power cycle restored operation. After
+  recovery, the CAN parent device was `spi0.0`.
+- Both S1 controllers returned to closed-loop control without active errors.
+  Both ROS controllers were active, and wheel position and velocity data were
+  valid.
+
+The SPI parent-device difference is an observation, not an established root
+cause. Investigation is deferred.
+
 ## Laptop Motion Test
 
 `obot_cmd_motion` is a terminal diagnostic for comparing commanded dead-reckoning
