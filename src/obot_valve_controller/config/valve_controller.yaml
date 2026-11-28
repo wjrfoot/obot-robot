@@ -2,7 +2,7 @@ valve_server:
   ros__parameters:
     circle_duration: 4.0
     square_duration: 2.0
-    triangle_duration: 5.0
+    triangle_duration: 0.0
     gpio_chip: /dev/gpiochip4
     gpio_pin: 22
     active_high: true

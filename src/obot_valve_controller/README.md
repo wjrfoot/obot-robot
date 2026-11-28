@@ -12,12 +12,16 @@ The action server exposes `/obot/spray` using
 
 | `spray_mode` | Button | Default duration |
 | --- | --- | ---: |
-| 0 | Circle | 1.0 s |
-| 1 | Square | 3.0 s |
-| 2 | Triangle | 5.0 s |
+| 0 | Circle | 4.0 s |
+| 1 | Square | 2.0 s |
+| 2 | Triangle | 0.0 s (disabled) |
 
 The default parameters are in `config/valve_controller.yaml`. Durations may be
-zero but must be finite and no greater than 300 seconds. The server reports
+zero but must be finite and no greater than 300 seconds. A configured zero
+disables the mode, including requests with a nonzero duration override. A
+zero goal duration selects the server's configured duration. Duration
+parameters are read-only while the server is running; change them in the
+configuration and restart the server. The server reports
 the last commanded valve state periodically on `/obot/valve/state`
 (`std_msgs/msg/Bool`) and publishes one
 `obot_valve_interfaces/msg/ValveCompletion` event for each accepted action on

@@ -1,8 +1,8 @@
 """Hardware-free tests for valve actions, Joy edges, and rumble."""
 
+from concurrent.futures import ThreadPoolExecutor
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 from action_msgs.msg import GoalStatus
@@ -26,9 +26,9 @@ import pytest
 
 import rclpy
 from rclpy.action import (
-    GoalResponse,
     get_action_client_names_and_types_by_node,
     get_action_server_names_and_types_by_node,
+    GoalResponse,
 )
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.parameter import Parameter
@@ -193,6 +193,33 @@ def test_overlapping_and_invalid_goals_are_rejected():
             GoalResponse.ACCEPT
         )
         node._execute_callback(FakeGoalHandle(2))
+    finally:
+        tear_down_node(node)
+
+
+@pytest.mark.parametrize('goal_duration', [0.0, 0.5])
+def test_zero_configured_duration_disables_mode(goal_duration):
+    """A disabled mode cannot open the valve, even with a goal override."""
+    node, gpio = make_server()
+    try:
+        node._durations[2] = 0.0
+        request = SprayValve.Goal(spray_mode=2, duration_sec=goal_duration)
+        assert node._goal_callback(request) == GoalResponse.REJECT
+        assert not node._reserved
+        result = node._execute_callback(FakeGoalHandle(2, duration=goal_duration))
+        assert not result.completed
+        assert not gpio.is_open
+    finally:
+        tear_down_node(node)
+
+
+def test_duration_parameters_are_read_only():
+    """Keep advertised durations consistent with the server's active config."""
+    node, _gpio = make_server()
+    try:
+        result = node.set_parameters([Parameter('square_duration', value=9.0)])
+        assert not result[0].successful
+        assert node.get_parameter('square_duration').value == 0.12
     finally:
         tear_down_node(node)
 

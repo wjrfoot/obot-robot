@@ -207,6 +207,8 @@ def fake_motion_node():
         command_linear_speed=0.2,
         command_angular_speed=0.35,
         active=('F', 0.015, 0.015),
+        drive_start_pose=None,
+        drive_target_distance=None,
         progress=0.0,
         timing=motion.TimingDiagnostics(),
         command_success=True,
@@ -238,21 +240,23 @@ def test_node_stops_at_target_and_waits_for_forwarded_zero(monkeypatch):
     monkeypatch.setattr(motion, 'time', SimpleNamespace(
         monotonic=lambda: now[0]))
     node = fake_motion_node()
-    first, second = mux_message(1), mux_message(2)
+    node.active = ('r', 1.0, 0.015)
+    first = mux_message(1, linear=0.0, angular=-0.35)
+    second = mux_message(2, linear=0.0, angular=-0.35)
     now[0] = 0.1
     motion.MotionTest._on_mux(node, first)
     assert node.progress == 0.0
     now[0] = 0.2
     motion.MotionTest._on_mux(node, second)
-    assert node.progress == pytest.approx(0.02)
+    assert node.progress == pytest.approx(0.035)
     assert node.active[2] == 0.015
     assert node.state == 'stopping'
     node._publish_cmd.assert_called_once_with(0.0, 0.0)
     zero = mux_message(3, linear=0.0)
     now[0] = 0.3
     motion.MotionTest._on_mux(node, zero)
-    assert node.progress == pytest.approx(0.04)
-    assert node.history.commanded_pose[0] == pytest.approx(0.04)
+    assert node.progress == pytest.approx(0.07)
+    assert abs(node.history.commanded_pose[2]) == pytest.approx(0.07)
     assert node.state == 'settling'
     motion.MotionTest._finish_settling(node, 0.3)
     node._report.assert_not_called()
@@ -270,13 +274,14 @@ def test_delayed_callback_causes_large_target_crossing(monkeypatch):
     monkeypatch.setattr(motion, 'time', SimpleNamespace(
         monotonic=lambda: now[0]))
     node = fake_motion_node()
-    node.active = ('F', 0.04, 0.04)
-    first, second = mux_message(1), mux_message(2)
+    node.active = ('r', 1.0, 0.04)
+    first = mux_message(1, linear=0.0, angular=-0.35)
+    second = mux_message(2, linear=0.0, angular=-0.35)
     motion.MotionTest._on_mux(node, first)
     now[0] = 0.26
     motion.MotionTest._on_mux(node, second)
-    assert node.progress == pytest.approx(0.05)
-    assert node.history.commanded_pose[0] == pytest.approx(0.05)
+    assert node.progress == pytest.approx(0.0875)
+    assert abs(node.history.commanded_pose[2]) == pytest.approx(0.0875)
     assert node.state == 'stopping'
     assert node.timing.max_mux_gap == pytest.approx(0.25)
     logs = ' '.join(
@@ -472,13 +477,16 @@ def test_node_continues_across_missing_reordered_or_duplicate_stamps(
     monkeypatch.setattr(motion, 'time', SimpleNamespace(
         monotonic=lambda: now[0]))
     node = fake_motion_node()
-    node.active = ('F', 0.04, 0.04)
+    node.active = ('r', 1.0, 0.04)
     messages = {n: mux_message(n) for n in (1, 2, 3, 4)}
+    for message in messages.values():
+        message.twist.linear.x = 0.0
+        message.twist.angular.z = -0.35
     for callback_time, stamp in zip((0.1, 0.2, 0.3), stamps):
         now[0] = callback_time
         motion.MotionTest._on_mux(node, messages[stamp])
-    assert node.progress == pytest.approx(0.04)
-    assert node.history.commanded_pose[0] == pytest.approx(0.04)
+    assert node.progress == pytest.approx(0.07)
+    assert abs(node.history.commanded_pose[2]) == pytest.approx(0.07)
     assert node.command_success
     assert node.state == 'stopping'
     assert node.pending
@@ -541,12 +549,15 @@ def test_second_forward_command_survives_missing_mux_sample(monkeypatch):
     node.state = 'idle'
     node.active = None
     node._fresh_odom = Mock(return_value=True)
+    odom_x = 0.0
     for command_index in range(2):
         motion.MotionTest._start_next(node)
         assert node.active == ('f', 3.0, pytest.approx(0.9144))
         for sample in range(150):
             now[0] += 0.033
             node.last_odom = now[0]
+            odom_x += 0.2 * 0.033
+            node.odom_pose = (odom_x, 0.0, 0.0)
             if command_index == 1 and sample == 50:
                 continue
             motion.MotionTest._on_mux(
@@ -595,6 +606,53 @@ def test_missing_forwarded_zero_fails_the_command(monkeypatch):
     assert node.progress == 0.0
     assert not node.pending
     node.get_logger().error.assert_called_once()
+
+
+def test_drive_remaining_uses_odometry_not_mux_progress():
+    node = fake_motion_node()
+    node.drive_start_pose = (1.0, 1.0, 0.0)
+    node.drive_target_distance = 4.0
+    node.odom_pose = (2.5, 1.0, 0.0)
+    node.progress = 0.1
+    assert motion.MotionTest._drive_remaining_m(node) == pytest.approx(2.5)
+
+
+@pytest.mark.parametrize(
+    ('command', 'odom_x', 'expected'),
+    [('F', 1.5, 1.5), ('b', -1.5, 1.5),
+     ('F', -1.5, 0.0), ('b', 1.5, 0.0)],
+)
+def test_drive_progress_projects_forward_and_reverse_odometry(
+        command, odom_x, expected):
+    node = fake_motion_node()
+    node.active = (command, 2.0, 2.0)
+    node.drive_start_pose = (0.0, 0.0, 0.0)
+    node.drive_target_distance = 2.0
+    node.odom_pose = (odom_x, 0.0, 0.0)
+    assert motion.MotionTest._drive_progress_m(node) == pytest.approx(expected)
+
+
+def test_tick_applies_final_approach_speed_from_remaining_distance(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(motion, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    node = fake_motion_node()
+    node.state = 'moving'
+    node.active = ('F', 4.0, 4.0)
+    node.drive_start_pose = (0.0, 0.0, 0.0)
+    node.drive_target_distance = 4.0
+    node.odom_pose = (3.2, 0.0, 0.0)
+    node.final_approach_distance_m = 1.0
+    node.final_approach_speed_mps = 0.2
+    node._read_input = Mock()
+    node._handle_inputs = Mock()
+    node._publish_state = Mock()
+    node._publish_paths = Mock()
+    node.last_path_publish = now[0]
+    node.quit_requested = False
+    node._fresh_odom = Mock(return_value=True)
+    node.mux_tracker = Mock(check_timeout=Mock())
+    motion.MotionTest._tick(node)
+    assert node._publish_cmd.call_args_list[-1].args[0] == pytest.approx(0.2)
 
 
 @pytest.mark.parametrize(
@@ -742,8 +800,15 @@ def test_motion_executor_with_long_paths(isolated_ros_env, monkeypatch):
     odom = Odometry()
     odom.header.frame_id = 'odom'
     odom.pose.pose.orientation.w = 1.0
+    odom_position = {'x': 0.0}
+
+    def publish_odom():
+        odom_position['x'] += 0.006
+        odom.pose.pose.position.x = odom_position['x']
+        odom_pub.publish(odom)
+
     odom_timer = observer.create_timer(
-        0.03, lambda: odom_pub.publish(odom))
+        0.03, publish_odom)
     try:
         deadline = time.monotonic() + 5.0
         while (not node._fresh_odom() or not command_times
@@ -760,7 +825,7 @@ def test_motion_executor_with_long_paths(isolated_ros_env, monkeypatch):
             assert time.monotonic() < deadline
             executor.spin_once(timeout_sec=0.02)
         assert node.command_success, node.failure_reason
-        assert node.progress >= 0.25
+        assert node.progress >= 0.24
         assert node.timing.max_path_points[0] >= 100000
         assert node.timing.max_path_duration < 0.2
         assert node.timing.max_tick_gap < 0.2
@@ -929,7 +994,7 @@ def test_stdin_eof_keeps_controller_running(isolated_ros_env):
             pass  # Expected: controller remains running.
         else:
             pytest.fail(
-                f"Controller exited on stdin EOF: {process.returncode}"
+                f'Controller exited on stdin EOF: {process.returncode}'
             )
         finally:
             process.terminate()

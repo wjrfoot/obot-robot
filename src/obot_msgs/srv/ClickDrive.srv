@@ -1,4 +1,4 @@
-# Commands: TURN, DRIVE, STOP, STATUS, MANUAL_BEGIN, MANUAL, MANUAL_END
+# Commands: PREPARE, TURN, DRIVE, STOP, STATUS, MANUAL_BEGIN, MANUAL, MANUAL_END
 string command
 
 # TURN: positive = right, negative = left (degrees)
@@ -14,7 +14,11 @@ float64 angular_speed_rps
 # Viewer instance and monotonically increasing request sequence.
 string client_id
 uint64 sequence
-float64 deadline_ros_s
+
+# PREPARE requests a one-use permit for this movement command.
+string permit_command
+# Movement requests carry the permit returned by PREPARE.
+string permit_id
 
 # MANUAL: -1, 0, or 1 for the requested linear and angular directions.
 int8 linear_direction
@@ -23,3 +27,4 @@ int8 angular_direction
 bool accepted
 string state
 string message
+string permit_id

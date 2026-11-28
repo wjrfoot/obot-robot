@@ -99,6 +99,27 @@ cause. Investigation is deferred.
 
 ## Laptop Motion Test
 
+### Viewer motion request clock issue
+
+On 2026-11-27, OBot-2's viewer TURN and directional requests were rejected
+with `Expired or out-of-order viewer request`. The old viewer used its own
+ROS wall clock to set a deadline 0.25 seconds ahead; the robot compared that
+deadline with its independently maintained clock and rejected values over one
+second into the future. A read-only STATUS diagnostic with a fresh viewer
+identity reproduced the failure while the robot clock was approximately
+1.095 seconds behind the laptop. The combined message did not distinguish
+this condition from expiration, non-finite deadlines or sequence errors.
+
+The replacement protocol issues one-use movement permits on `/click_drive`
+with expiry measured using the robot's monotonic clock. Increasing viewer
+sequences reject duplicates and reordering; STOP and manual release invalidate
+outstanding permits without being rejected for their own sequence. Before its
+first movement, a new viewer waits for an acknowledged STOP barrier. A failed
+network can still prevent a STOP request from reaching the robot; the
+directional lease remains an independent robot-side timeout. This is not a hardware emergency stop.
+Both robot and laptop must build and run the matching updated `obot_msgs`
+interface. See the laptop README for its clean-build procedure.
+
 `obot_cmd_motion` is a terminal diagnostic for comparing commanded dead-reckoning
 with wheel odometry. Run it on `ros-24` after sourcing the ROS 2 Jazzy and OBot
 workspace setup files and joining the same ROS domain/DDS network as `pi-bot-2`:

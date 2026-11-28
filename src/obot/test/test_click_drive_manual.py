@@ -5,10 +5,9 @@ import queue
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import pytest
-from obot_msgs.srv import ClickDrive
-
 from obot.obot_cmd_motion import MotionTest, MuxOutputTracker, TimingDiagnostics
+from obot_msgs.srv import ClickDrive
+import pytest
 
 
 def node():
@@ -18,11 +17,13 @@ def node():
         observed_velocity=(0.0, 0.0), progress=0.0, timing=TimingDiagnostics(),
         still_since=None, inputs=queue.Queue(), manual_owner=None,
         manual_deadline=0.0, manual_velocity=(0.0, 0.0), viewer_sequences={},
+        viewer_permits={},
         linear_speed=0.2, angular_speed=0.35, max_viewer_linear_speed=0.2,
         max_viewer_angular_speed=0.35, _publish_cmd=Mock(), _fresh_odom=Mock(return_value=True),
         _stopped=Mock(return_value=True), _manual_active=Mock(return_value=False),
         get_logger=Mock(return_value=Mock()),
-        get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=100_000_000_000)))
+        get_clock=lambda: SimpleNamespace(
+            now=lambda: SimpleNamespace(nanoseconds=100_000_000_000)))
     n._stop = lambda: MotionTest._stop(n)
     return n
 
@@ -32,13 +33,19 @@ def request(command, sequence, **kwargs):
     r.command = command
     r.client_id = 'viewer'
     r.sequence = sequence
-    r.deadline_ros_s = 100.25
     for key, value in kwargs.items():
         setattr(r, key, value)
     return r
 
 
 def call(n, req):
+    if req.command in ('TURN', 'DRIVE', 'MANUAL_BEGIN', 'MANUAL'):
+        prepare = request('PREPARE', req.sequence, permit_command=req.command)
+        prepare.client_id = req.client_id
+        prepared = MotionTest._on_click_drive(n, prepare, ClickDrive.Response())
+        if not prepared.accepted:
+            return prepared
+        req.permit_id = prepared.permit_id
     return MotionTest._on_click_drive(n, req, ClickDrive.Response())
 
 
@@ -127,10 +134,17 @@ def test_manual_heartbeat_requires_fresh_odometry_and_rejects_diagonal():
     assert not stale.accepted and n.manual_velocity == (0.0, 0.0)
 
 
-def test_expired_takeover_does_not_cancel_or_move():
+def test_expired_takeover_does_not_cancel_or_move(monkeypatch):
+    from obot import obot_cmd_motion as motion
+
     n = node()
+    now = [100.0]
+    monkeypatch.setattr(motion, 'time', SimpleNamespace(monotonic=lambda: now[0]))
     req = request('MANUAL_BEGIN', 1)
-    req.deadline_ros_s = 99.0
-    response = call(n, req)
+    prep = request('PREPARE', 1, permit_command='MANUAL_BEGIN')
+    req.permit_id = MotionTest._on_click_drive(n, prep, ClickDrive.Response()).permit_id
+    now[0] += 0.6
+    response = MotionTest._on_click_drive(n, req, ClickDrive.Response())
     assert not response.accepted and n.active is not None
+    assert response.message == 'Movement permit expired'
     n._publish_cmd.assert_not_called()

@@ -10,6 +10,7 @@ import select
 import signal
 import sys
 import time
+import uuid
 
 from geometry_msgs.msg import PoseStamped, TwistStamped
 
@@ -27,6 +28,8 @@ FEET_TO_METERS = 0.3048
 COMMAND_RATE_HZ = 30.0
 PATH_PUBLISH_RATE_HZ = 2.0
 PATH_DISPLAY_LIMIT = 500
+VIEWER_PERMIT_TTL_S = 0.5
+VIEWER_MOVEMENT_COMMANDS = ('TURN', 'DRIVE', 'MANUAL_BEGIN', 'MANUAL')
 HELP = """OBot motion test commands
   f N   forward N feet          F N   forward N meters
   b N   backward N feet         B N   backward N meters
@@ -292,6 +295,8 @@ class MotionTest(Node):
             ('stop_angular_tolerance', 0.025),
             ('stop_hold_s', 0.5),
             ('settle_timeout_s', 8.0),
+            ('final_approach_distance_m', 1.0),
+            ('final_approach_speed_mps', 0.20),
         )
         for key, value in defaults:
             self.declare_parameter(key, value)
@@ -306,6 +311,7 @@ class MotionTest(Node):
         self.command_linear_speed = self.linear_speed
         self.command_angular_speed = self.angular_speed
         self.viewer_sequences = {}
+        self.viewer_permits = {}
         self.manual_owner = None
         self.manual_deadline = 0.0
         self.manual_velocity = (0.0, 0.0)
@@ -315,15 +321,22 @@ class MotionTest(Node):
         self.stop_w = float(param('stop_angular_tolerance'))
         self.stop_hold = float(param('stop_hold_s'))
         self.settle_timeout = float(param('settle_timeout_s'))
+        self.final_approach_distance_m = float(param('final_approach_distance_m'))
+        self.final_approach_speed_mps = float(param('final_approach_speed_mps'))
         positive = (
             self.linear_speed, self.angular_speed, self.odom_timeout,
             self.max_viewer_linear_speed, self.max_viewer_angular_speed,
             self.mux_output_timeout,
             self.stop_v, self.stop_w, self.stop_hold, self.settle_timeout,
+            self.final_approach_speed_mps,
         )
         if not all(math.isfinite(value) and value > 0 for value in positive):
             raise ValueError(
                 'Speeds, tolerances, and timeouts must be positive and finite')
+        if (not math.isfinite(self.final_approach_distance_m)
+                or self.final_approach_distance_m < 0):
+            raise ValueError(
+                'final_approach_distance_m must be finite and nonnegative')
         self.cmd_pub = self.create_publisher(
             TwistStamped, str(param('cmd_topic')), 10)
         path_qos = QoSProfile(
@@ -364,6 +377,8 @@ class MotionTest(Node):
         self.command_success = True
         self.failure_reason = None
         self.state = 'idle'
+        self.drive_start_pose = None
+        self.drive_target_distance = None
         self.click_drive_srv = self.create_service(
             ClickDrive, '/click_drive', self._on_click_drive)
         self.settle_start = None
@@ -504,7 +519,9 @@ class MotionTest(Node):
             self.still_since = None
             self.get_logger().info(
                 'Zero mux output observed; waiting for odometry to settle')
-        elif self.state == 'moving' and self.progress >= self.active[2]:
+        elif (self.state == 'moving'
+              and self.active[0] in ('r', 'l')
+              and self.progress >= self.active[2]):
             self.state = 'stopping'
             self.target_reached_at = now
             self.target_reached_progress = self.progress
@@ -520,6 +537,18 @@ class MotionTest(Node):
                 f'Target crossing: previous={previous_progress:.5f} SI, '
                 f'interval={interval[2]:.3f}s, '
                 f'callback-to-zero publish={time.monotonic() - now:.3f}s')
+        elif self.state == 'moving' and self.active[0] in ('f', 'F', 'b', 'B'):
+            remaining = MotionTest._drive_remaining_m(self)
+            if remaining is not None and remaining <= 0:
+                self.state = 'stopping'
+                self.target_reached_at = now
+                self.target_reached_progress = self.progress
+                self.target_odom_yaw = (
+                    self.odom_pose[2] if self.odom_pose is not None else None)
+                self.get_logger().info(
+                    f'Drive target reached by odometry in mux callback; '
+                    f'remaining={remaining:.4f} m; publishing zero')
+                self._publish_cmd(0.0, 0.0)
 
     def _reset_origin(self):
         if self.odom_pose is None:
@@ -587,6 +616,25 @@ class MotionTest(Node):
             and time.monotonic() - self.last_odom <= self.odom_timeout
         )
 
+    def _drive_progress_m(self):
+        if self.drive_start_pose is None or self.odom_pose is None:
+            return None
+        sx, sy, syaw = self.drive_start_pose
+        ox, oy, _ = self.odom_pose
+        dx, dy = ox - sx, oy - sy
+        reverse = self.active is not None and self.active[0] in ('b', 'B')
+        direction = -1.0 if reverse else 1.0
+        return max(0.0, direction * (
+            dx * math.cos(syaw) + dy * math.sin(syaw)))
+
+    def _drive_remaining_m(self):
+        if self.drive_target_distance is None:
+            return None
+        progress = MotionTest._drive_progress_m(self)
+        if progress is None:
+            return None
+        return max(0.0, self.drive_target_distance - progress)
+
     def _stopped(self):
         return (
             abs(self.odom_v) <= self.stop_v
@@ -605,6 +653,8 @@ class MotionTest(Node):
         self.progress = 0.0
         self.timing = TimingDiagnostics()
         self.still_since = None
+        self.drive_start_pose = None
+        self.drive_target_distance = None
         self._publish_cmd(0.0, 0.0)
 
     def _report(self, final=False):
@@ -661,24 +711,76 @@ class MotionTest(Node):
     def _on_click_drive(self, request, response):
         """Handle camera-directed rotation and cancellation."""
         command = request.command.strip().upper()
+        now = time.monotonic()
+        self.viewer_permits = {
+            token: permit for token, permit in self.viewer_permits.items()
+            if permit[3] + 5.0 > now
+        }
 
-        if request.client_id:
-            now_ros = self.get_clock().now().nanoseconds * 1e-9
-            deadline = request.deadline_ros_s
-            previous = self.viewer_sequences.get(request.client_id, 0)
-            if (not math.isfinite(deadline) or deadline < now_ros
-                    or deadline > now_ros + 1.0 or request.sequence <= previous):
-                response.accepted = False
-                response.state = self.state
-                response.message = 'Expired or out-of-order viewer request'
+        if command in ('STOP', 'MANUAL_END'):
+            self.viewer_permits = {
+                token: (*permit[:4], 'canceled')
+                if permit[4] == 'active' else permit
+                for token, permit in self.viewer_permits.items()
+            }
+            if request.client_id:
+                previous = self.viewer_sequences.get(request.client_id, 0)
+                self.viewer_sequences[request.client_id] = max(previous, request.sequence)
+        elif command == 'PREPARE':
+            target = request.permit_command.strip().upper()
+            response.state = self.state
+            if not request.client_id:
+                response.message = 'Movement permit requires a viewer identity'
+            elif target not in VIEWER_MOVEMENT_COMMANDS:
+                response.message = 'Unsupported movement permit command'
+            elif request.sequence == self.viewer_sequences.get(request.client_id, 0):
+                response.message = 'Duplicate viewer sequence'
+            elif request.sequence < self.viewer_sequences.get(request.client_id, 0):
+                response.message = 'Out-of-order viewer sequence'
+            else:
+                self.viewer_sequences[request.client_id] = request.sequence
+                token = uuid.uuid4().hex
+                self.viewer_permits[token] = (
+                    request.client_id, request.sequence, target,
+                    now + VIEWER_PERMIT_TTL_S, 'active')
+                response.accepted = True
+                response.permit_id = token
+                response.message = 'Movement permit issued'
+            return response
+        elif command in VIEWER_MOVEMENT_COMMANDS:
+            response.state = self.state
+            if not request.client_id:
+                response.message = 'Movement request requires a viewer identity'
                 return response
-            self.viewer_sequences[request.client_id] = request.sequence
+            permit = self.viewer_permits.get(request.permit_id)
+            if permit is None:
+                response.message = 'Movement permit is unknown'
+                return response
+            if permit[4] != 'active':
+                response.message = f'Movement permit was {permit[4]}'
+                return response
+            if permit[3] <= now:
+                response.message = 'Movement permit expired'
+                return response
+            self.viewer_permits[request.permit_id] = (*permit[:4], 'used')
+            if permit[:3] != (request.client_id, request.sequence, command):
+                response.message = 'Movement permit does not match request'
+                return response
+            if request.sequence != self.viewer_sequences.get(request.client_id):
+                response.message = 'Out-of-order viewer movement request'
+                return response
 
         if command == 'STATUS':
             response.accepted = True
             response.state = self.state
-            response.message = (
-                f'active={self.active}, pending={len(self.pending)}')
+            remaining = MotionTest._drive_remaining_m(self)
+            if remaining is None:
+                response.message = (
+                    f'active={self.active}, pending={len(self.pending)}')
+            else:
+                response.message = (
+                    f'active={self.active}, pending={len(self.pending)}, '
+                    f'remaining_m={remaining:.3f}')
             return response
 
         if command == 'STOP':
@@ -691,15 +793,11 @@ class MotionTest(Node):
             return response
 
         if command == 'MANUAL_END':
-            if request.client_id and self.manual_owner in (None, request.client_id):
-                self.manual_owner = None
-                self.manual_velocity = (0.0, 0.0)
-                self._stop()
-                response.accepted = True
-                response.message = 'Manual motion stopped'
-            else:
-                response.accepted = False
-                response.message = 'Manual ownership not held'
+            self.manual_owner = None
+            self.manual_velocity = (0.0, 0.0)
+            self._stop()
+            response.accepted = True
+            response.message = 'Manual motion stopped'
             response.state = self.state
             return response
 
@@ -746,8 +844,7 @@ class MotionTest(Node):
             self.manual_velocity = (
                 request.linear_direction * min(speeds[0], self.max_viewer_linear_speed),
                 request.angular_direction * min(speeds[1], self.max_viewer_angular_speed))
-            self.manual_deadline = time.monotonic() + min(
-                0.3, max(0.0, deadline - now_ros))
+            self.manual_deadline = time.monotonic() + 0.3
             response.accepted = True
             response.state = 'manual'
             response.message = 'Manual command accepted'
@@ -782,10 +879,10 @@ class MotionTest(Node):
                 return response
         else:
             magnitude = float(request.distance_m)
-            if not math.isfinite(magnitude) or not 0.1 <= magnitude <= 5.0:
+            if not math.isfinite(magnitude) or not 0.1 <= magnitude <= 6.0:
                 response.accepted = False
                 response.state = self.state
-                response.message = 'Distance must be between 0.1 and 5.0 meters'
+                response.message = 'Distance must be between 0.1 and 6.0 meters'
                 return response
 
         if (
@@ -885,6 +982,8 @@ class MotionTest(Node):
         self.zero_odom_yaw = None
         self.command_success = True
         self.failure_reason = None
+        self.drive_start_pose = self.odom_pose if command in ('f', 'F', 'b', 'B') else None
+        self.drive_target_distance = target if command in ('f', 'F', 'b', 'B') else None
         self.mux_tracker.start(time.monotonic())
         self.observed_velocity = (0.0, 0.0)
         self.state = 'moving'
@@ -971,10 +1070,27 @@ class MotionTest(Node):
                 self._fail_motion(str(exc))
         if self.state == 'moving':
             command, _, _ = self.active
-            if command in ('r', 'l'):
+            if command in ('f', 'F', 'b', 'B'):
+                remaining = MotionTest._drive_remaining_m(self)
+                speed = self.command_linear_speed
+                if remaining is not None:
+                    if remaining <= 0:
+                        self.state = 'stopping'
+                        self.target_reached_at = now
+                        self.target_reached_progress = self.progress
+                        self.target_odom_yaw = (
+                            self.odom_pose[2] if self.odom_pose is not None else None)
+                        self.get_logger().info(
+                            f'Drive target reached by odometry; remaining={remaining:.4f} m; '
+                            'publishing zero')
+                        self._publish_cmd(0.0, 0.0)
+                    elif remaining <= self.final_approach_distance_m:
+                        speed = min(speed, self.final_approach_speed_mps)
+                if self.state == 'moving':
+                    direction = -1.0 if command in ('b', 'B') else 1.0
+                    linear = direction * speed
+            elif command in ('r', 'l'):
                 angular = rotation_sign(command) * self.command_angular_speed
-            elif command in ('b', 'B'):
-                linear = -self.command_linear_speed
             else:
                 linear = self.command_linear_speed
         elif self.state == 'settling':

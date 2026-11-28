@@ -4,12 +4,13 @@ import math
 import threading
 import time
 
-from obot_valve_controller.gpio_backend import create_gpio_output
 from obot_valve_controller.client_logic import MAX_SPRAY_DURATION_SEC
+from obot_valve_controller.gpio_backend import create_gpio_output
 
 from obot_valve_interfaces.action import SprayValve
 from obot_valve_interfaces.msg import ValveCompletion
 
+from rcl_interfaces.msg import ParameterDescriptor
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -35,9 +36,10 @@ class ValveServer(Node):
             parameter_overrides=parameter_overrides,
         )
 
-        self.declare_parameter('circle_duration', 4.0)
-        self.declare_parameter('square_duration', 2.0)
-        self.declare_parameter('triangle_duration', 5.0)
+        duration_descriptor = ParameterDescriptor(read_only=True)
+        self.declare_parameter('circle_duration', 4.0, duration_descriptor)
+        self.declare_parameter('square_duration', 2.0, duration_descriptor)
+        self.declare_parameter('triangle_duration', 0.0, duration_descriptor)
         self.declare_parameter('gpio_chip', '/dev/gpiochip4')
         self.declare_parameter('gpio_pin', 22)
         self.declare_parameter('active_high', True)
@@ -163,6 +165,9 @@ class ValveServer(Node):
         if mode not in self._durations:
             self.get_logger().warning(f'Rejecting invalid spray mode {mode}')
             return GoalResponse.REJECT
+        if self._durations[mode] == 0.0:
+            self.get_logger().warning(f'Rejecting disabled spray mode {mode}')
+            return GoalResponse.REJECT
         if (
             not math.isfinite(request.duration_sec)
             or not 0.0 <= request.duration_sec <= MAX_SPRAY_DURATION_SEC
@@ -229,8 +234,8 @@ class ValveServer(Node):
         message = 'Spray action aborted'
 
         try:
-            if duration is None:
-                raise ValueError(f'Invalid spray mode {mode}')
+            if duration is None or self._durations.get(mode, 0.0) <= 0.0:
+                raise ValueError(f'Invalid or disabled spray mode {mode}')
             with self._lock:
                 if self._shutting_down:
                     raise RuntimeError('Valve server is shutting down')
