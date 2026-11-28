@@ -722,7 +722,7 @@ class MotionTest(Node):
 
         if command in ('STOP', 'MANUAL_END'):
             self.viewer_permits = {
-                token: (*permit[:4], 'canceled')
+                token: (*permit[:4], 'canceled', permit[5])
                 if permit[4] == 'active' else permit
                 for token, permit in self.viewer_permits.items()
             }
@@ -731,11 +731,21 @@ class MotionTest(Node):
                 self.viewer_sequences[request.client_id] = max(previous, request.sequence)
         elif command == 'PREPARE':
             target = request.permit_command.strip().upper()
+            continuation = request.permit_id
             response.state = self.state
             if not request.client_id:
                 response.message = 'Movement permit requires a viewer identity'
             elif target not in VIEWER_MOVEMENT_COMMANDS:
                 response.message = 'Unsupported movement permit command'
+            elif continuation and (
+                    target != 'DRIVE' or self.viewer_result is None
+                    or self.viewer_result[2] != 'TURN'
+                    or continuation != (
+                        f'{self.viewer_result[0]}:{self.viewer_result[1]}')
+                    or request.client_id != self.viewer_result[0]
+                    or not self.command_success or self.state != 'idle'
+                    or self.active is not None or self.pending):
+                response.message = 'Turn continuation canceled or no longer valid'
             elif request.sequence == self.viewer_sequences.get(request.client_id, 0):
                 response.message = 'Duplicate viewer sequence'
             elif request.sequence < self.viewer_sequences.get(request.client_id, 0):
@@ -745,10 +755,11 @@ class MotionTest(Node):
                 token = uuid.uuid4().hex
                 self.viewer_permits[token] = (
                     request.client_id, request.sequence, target,
-                    now + VIEWER_PERMIT_TTL_S, 'active')
+                    now + VIEWER_PERMIT_TTL_S, 'active', continuation)
                 response.accepted = True
                 response.permit_id = token
-                response.message = 'Movement permit issued'
+                response.message = ('Turn continuation permit issued' if continuation
+                                    else 'Movement permit issued')
             return response
         elif command in VIEWER_MOVEMENT_COMMANDS:
             response.state = self.state
@@ -765,9 +776,20 @@ class MotionTest(Node):
             if permit[3] <= now:
                 response.message = 'Movement permit expired'
                 return response
-            self.viewer_permits[request.permit_id] = (*permit[:4], 'used')
+            self.viewer_permits[request.permit_id] = (*permit[:4], 'used', permit[5])
             if permit[:3] != (request.client_id, request.sequence, command):
                 response.message = 'Movement permit does not match request'
+                return response
+            if permit[5] != request.permit_command:
+                response.message = 'Movement continuation does not match permit'
+                return response
+            if permit[5] and (
+                    self.viewer_result is None
+                    or self.viewer_result[2] != 'TURN'
+                    or permit[5] != f'{self.viewer_result[0]}:{self.viewer_result[1]}'
+                    or not self.command_success or self.state != 'idle'
+                    or self.active is not None or self.pending):
+                response.message = 'Turn continuation canceled or no longer valid'
                 return response
             if request.sequence != self.viewer_sequences.get(request.client_id):
                 response.message = 'Out-of-order viewer movement request'
@@ -796,6 +818,8 @@ class MotionTest(Node):
             self.manual_owner = None
             self.manual_velocity = (0.0, 0.0)
             self._stop()
+            while not self.inputs.empty():
+                self.inputs.get_nowait()
             response.accepted = True
             response.state = self.state
             response.message = 'Motion stopped and queue cleared'
@@ -926,7 +950,7 @@ class MotionTest(Node):
 
         self.command_success = True
         self.failure_reason = None
-        self.viewer_result = (request.client_id, request.sequence)
+        self.viewer_result = (request.client_id, request.sequence, command)
         if command == 'TURN':
             direction = 'r' if magnitude > 0 else 'l'
             magnitude = abs(magnitude)

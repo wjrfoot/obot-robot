@@ -1,5 +1,6 @@
 """Exercise viewer request validation through a real ROS service with mock motion."""
 
+from concurrent.futures import Future
 import importlib
 import os
 from pathlib import Path
@@ -25,9 +26,15 @@ def service():
     motion.state = 'idle'
     motion.active = None
     motion.pending.clear()
+    received = []
+
+    def handle(req, res):
+        if req.command == 'MANUAL':
+            received.append((req.linear_direction, req.angular_direction))
+        return MotionTest._on_click_drive(motion, req, res)
+
     server.create_service(
-        ClickDrive, '/click_drive_permit_test',
-        lambda req, res: MotionTest._on_click_drive(motion, req, res))
+        ClickDrive, '/click_drive_permit_test', handle)
     client = client_node.create_client(ClickDrive, '/click_drive_permit_test')
     executor = SingleThreadedExecutor()
     executor.add_node(server)
@@ -43,6 +50,7 @@ def service():
 
     send.client = client
     send.node = client_node
+    send.received = received
     yield motion, send
     executor.shutdown()
     thread.join(timeout=5.0)
@@ -51,8 +59,9 @@ def service():
     rclpy.shutdown()
 
 
-def prepare(send, command, sequence, client_id='viewer'):
-    req = request('PREPARE', sequence, permit_command=command)
+def prepare(send, command, sequence, client_id='viewer', continuation_of=''):
+    req = request('PREPARE', sequence, permit_command=command,
+                  permit_id=continuation_of)
     req.client_id = client_id
     return send(req)
 
@@ -87,6 +96,54 @@ def test_click_and_directional_requests_ignore_independent_ros_clocks(
                   linear_speed_mps=0.2, angular_speed_rps=0.35)
     assert not result.accepted and result.message == 'Movement permit was canceled'
     assert motion.manual_owner is None and motion.manual_velocity == (0.0, 0.0)
+
+
+@pytest.mark.parametrize(('button', 'expected', 'velocity'), [
+    ('FORWARD', (1, 0), (0.2, 0.0)), ('REVERSE', (-1, 0), (-0.2, 0.0)),
+    ('LEFT', (0, 1), (0.0, 0.35)), ('RIGHT', (0, -1), (0.0, -0.35)),
+])
+def test_actual_viewer_direction_over_ros_service(
+        service, monkeypatch, button, expected, velocity):
+    import cv2
+    import obot
+
+    viewer_source = Path(os.environ.get(
+        'OBOT_VIEWER_SOURCE',
+        str(Path(__file__).resolve().parents[4] / 'obot_ws/src/obot/obot')))
+    if not (viewer_source / 'dual_compressed_viewer.py').is_file():
+        pytest.skip('Laptop viewer source is not available')
+    monkeypatch.setattr(obot, '__path__', [*obot.__path__, str(viewer_source)])
+    module = importlib.import_module('obot.dual_compressed_viewer')
+    motion, send = service
+    viewer = SimpleNamespace(
+        _viewer_id='viewer', _viewer_sequence=0, _motion_session_ready=True,
+        directional_speed=0.2,
+        directional_settings={name.removeprefix('directional.'): value
+                              for name, value in module.DIRECTIONAL_DEFAULTS.items()},
+        _manual_client=send.client, _manual_button=None, _manual_owned=False,
+        _manual_future=None, _manual_kind=None, _manual_future_started=0.0,
+        _directional_hits={button: (10, 10, 50, 40)}, speed_presets={},
+        directional_enable_motion=True, _click_future=None, _click_request_kind=None,
+        tracking_worker=Mock())
+    for name in ('_viewer_request', '_manual_send', '_manual_stop', '_manual_press',
+                 '_clear_selected_target', '_handle_motion_mouse'):
+        setattr(viewer, name, getattr(module.DualCompressedViewer, name).__get__(viewer))
+
+    def await_response():
+        operation = viewer._manual_future
+        deadline = time.monotonic() + 3.0
+        while not operation.done() and time.monotonic() < deadline:
+            rclpy.spin_once(send.node, timeout_sec=0.005)
+        assert operation.done()
+        return operation.result()
+
+    assert viewer._handle_motion_mouse(cv2.EVENT_LBUTTONDOWN, 20, 20, cv2.EVENT_FLAG_LBUTTON)
+    assert await_response().accepted
+    assert viewer._manual_send('MANUAL')
+    result = await_response()
+    assert send.received[-1] == expected
+    assert result.accepted, result.message
+    assert motion.manual_velocity == pytest.approx(velocity)
 
 
 def test_duplicates_reordering_expiry_and_stop_barriers(service, monkeypatch):
@@ -170,7 +227,68 @@ def test_stopped_queued_turn_cannot_report_success(service):
     assert status.message.startswith('result=failed, request=none,')
 
 
-def test_viewer_combined_go_uses_confirmed_turn_and_fresh_distance(service, monkeypatch):
+def test_stop_clears_active_pending_and_waiting_cli_motion(service):
+    motion, send = service
+    motion.active = ('F', 3.0, 3.0)
+    motion.state = 'moving'
+    motion.pending.append(('r', 20.0))
+    motion.inputs.put(('F', 5.0))
+    assert send(request('STOP', 1)).accepted
+    assert motion.active is None and not motion.pending and motion.inputs.empty()
+    MotionTest._handle_inputs(motion)
+    assert not motion.pending
+
+
+@pytest.mark.parametrize('stop_command', ['STOP', 'MANUAL_END'])
+def test_stopping_after_continuation_permit_blocks_delayed_drive(service, stop_command):
+    motion, send = service
+    turn = prepare(send, 'TURN', 1)
+    assert move(send, 'TURN', 1, turn.permit_id, angle_deg=20.0).accepted
+    motion.pending.clear()
+    permit = prepare(send, 'DRIVE', 2, continuation_of='viewer:1')
+    assert permit.accepted
+    stop = request(stop_command, 1)
+    stop.client_id = 'another-viewer'
+    assert send(stop).accepted
+    result = move(send, 'DRIVE', 2, permit.permit_id, distance_m=2.0,
+                  permit_command='viewer:1')
+    assert not result.accepted and result.message == 'Movement permit was canceled'
+    assert not motion.pending
+    explicit = prepare(send, 'DRIVE', 3)
+    assert move(send, 'DRIVE', 3, explicit.permit_id, distance_m=2.0).accepted
+    assert list(motion.pending) == [('F', 2.0)]
+
+
+def test_continuation_cannot_survive_manual_takeover(service):
+    motion, send = service
+    turn = prepare(send, 'TURN', 1)
+    assert move(send, 'TURN', 1, turn.permit_id, angle_deg=20.0).accepted
+    motion.pending.clear()
+    permit = prepare(send, 'DRIVE', 2, continuation_of='viewer:1')
+    assert permit.accepted
+    manual = prepare(send, 'MANUAL_BEGIN', 1, client_id='other')
+    assert move(send, 'MANUAL_BEGIN', 1, manual.permit_id, client_id='other').accepted
+    result = move(send, 'DRIVE', 2, permit.permit_id, distance_m=2.0,
+                  permit_command='viewer:1')
+    assert not result.accepted and 'continuation canceled' in result.message
+    assert not motion.pending
+
+
+def test_continuation_cannot_strip_dependency_from_permit(service):
+    motion, send = service
+    turn = prepare(send, 'TURN', 1)
+    assert move(send, 'TURN', 1, turn.permit_id, angle_deg=20.0).accepted
+    motion.pending.clear()
+    permit = prepare(send, 'DRIVE', 2, continuation_of='viewer:1')
+    assert permit.accepted
+    result = move(send, 'DRIVE', 2, permit.permit_id, distance_m=2.0)
+    assert not result.accepted and 'does not match' in result.message
+    assert not motion.pending
+
+
+@pytest.mark.parametrize('stop_mode', ['none', 'external', 'universal'])
+def test_viewer_combined_go_uses_confirmed_turn_and_fresh_distance(
+        service, monkeypatch, stop_mode):
     import obot
 
     viewer_source = Path(os.environ.get(
@@ -194,9 +312,11 @@ def test_viewer_combined_go_uses_confirmed_turn_and_fresh_distance(service, monk
         _click_last_status=0.0, _go_requested_distance_m=None, _go_start_pose=None,
         _latest_odom_pose=(0.0, 0.0, 0.0), operator_units='m',
         tracking_worker=Mock(), click_message='',
+        _manual_stop=Mock(), spray=Mock(),
         _go_distance_from_lidar=Mock(return_value=8.0))
     for name in ('_viewer_request', '_click_request', '_click_poll', '_begin_go',
-                 '_start_go_drive', '_request_drive', '_clear_selected_target'):
+                 '_start_go_drive', '_request_drive', '_clear_selected_target',
+                 '_universal_stop'):
         setattr(v, name, getattr(module.DualCompressedViewer, name).__get__(v))
 
     def wait_for(condition):
@@ -213,10 +333,38 @@ def test_viewer_combined_go_uses_confirmed_turn_and_fresh_distance(service, monk
     assert list(motion.pending) == [('r', 20.0)]
     v._go_distance_from_lidar.assert_not_called()
     motion.pending.clear()
-    wait_for(lambda: bool(motion.pending))
-    assert list(motion.pending) == [('F', 8.0)]
-    assert v._go_requested_distance_m == 8.0
-    v._go_distance_from_lidar.assert_called_once()
+    if stop_mode != 'none':
+        # A completed STATUS response can be delayed across another client's STOP.
+        completed = send(request('STATUS', 2))
+        response = Future()
+        v._click_future = response
+        v._click_request_kind = 'STATUS'
+        if stop_mode == 'external':
+            stop = request('STOP', 1)
+            stop.client_id = 'other-viewer'
+            assert send(stop).accepted
+            response.set_result(completed)
+            v._click_poll()
+            wait_for(lambda: v.click_state == 'ready' and v._click_future is None)
+            assert 'rejected' in v.click_message
+        else:
+            v._universal_stop()
+            v.spray.cancel_all.assert_called_once()
+            wait_for(lambda: v.click_state == 'idle' and v._click_future is None)
+            response.set_result(completed)
+            v._click_poll()
+        assert not motion.pending
+        v._begin_go(2.0)
+        wait_for(lambda: bool(motion.pending))
+        assert list(motion.pending) == [('F', 2.0)]
+    else:
+        wait_for(lambda: bool(motion.pending))
+        assert list(motion.pending) == [('F', 8.0)]
+        assert v._go_requested_distance_m == 8.0
+    if stop_mode == 'universal':
+        v._go_distance_from_lidar.assert_not_called()
+    else:
+        v._go_distance_from_lidar.assert_called_once()
 
 
 @pytest.mark.parametrize('offset', [-3600.0, 3600.0])
