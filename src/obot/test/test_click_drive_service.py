@@ -6,6 +6,7 @@ from pathlib import Path
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from obot.obot_cmd_motion import MotionTest
 from obot_msgs.srv import ClickDrive
@@ -134,6 +135,88 @@ def test_single_use_and_restart_with_controller_running(service):
     restarted = prepare(send, 'TURN', 1, 'new-viewer')
     assert move(send, 'TURN', 1, restarted.permit_id, 'new-viewer', angle_deg=5.0).accepted
     assert list(motion.pending) == [('r', 5.0)]
+
+
+def test_status_correlates_completion_and_stop_with_accepted_request(service):
+    motion, send = service
+    permit = prepare(send, 'TURN', 1)
+    assert move(send, 'TURN', 1, permit.permit_id, angle_deg=20.0).accepted
+    queued = send(request('STATUS', 2))
+    assert queued.state == 'queued'
+    assert queued.message.startswith('result=success, request=viewer:1,')
+    motion.pending.clear()
+    complete = send(request('STATUS', 3))
+    assert complete.state == 'idle'
+    assert complete.message.startswith('result=success, request=viewer:1,')
+    assert send(request('STOP', 4)).accepted
+    assert 'request=none,' in send(request('STATUS', 5)).message
+
+
+def test_large_finite_drive_is_accepted(service):
+    motion, send = service
+    permit = prepare(send, 'DRIVE', 1)
+    response = move(send, 'DRIVE', 1, permit.permit_id, distance_m=12.0)
+    assert response.accepted
+    assert list(motion.pending) == [('F', 12.0)]
+
+
+def test_stopped_queued_turn_cannot_report_success(service):
+    _, send = service
+    permit = prepare(send, 'TURN', 1)
+    assert move(send, 'TURN', 1, permit.permit_id, angle_deg=20.0).accepted
+    assert send(request('STOP', 2)).accepted
+    status = send(request('STATUS', 3))
+    assert status.state == 'idle'
+    assert status.message.startswith('result=failed, request=none,')
+
+
+def test_viewer_combined_go_uses_confirmed_turn_and_fresh_distance(service, monkeypatch):
+    import obot
+
+    viewer_source = Path(os.environ.get(
+        'OBOT_VIEWER_SOURCE',
+        str(Path(__file__).resolve().parents[4] / 'obot_ws/src/obot/obot')))
+    if not (viewer_source / 'dual_compressed_viewer.py').is_file():
+        pytest.skip('Laptop viewer source is not available')
+    monkeypatch.setattr(obot, '__path__', [*obot.__path__, str(viewer_source)])
+    module = importlib.import_module('obot.dual_compressed_viewer')
+    motion, send = service
+    settings = {key.removeprefix('directional.'): value
+                for key, value in module.DIRECTIONAL_DEFAULTS.items()}
+    v = SimpleNamespace(
+        _manual_button=None, click_state='selected', click_enable_motion=True,
+        selected_target=module.TargetTrackerState(status='tracking', bearing_deg=20.0),
+        _pending_go=None, _click_future=None, _click_request_kind=None,
+        _click_client=send.client, _motion_session_ready=True,
+        _viewer_id='viewer', _viewer_sequence=0, _motion_result_id=None,
+        directional_speed=0.2, directional_settings=settings,
+        _click_saw_turn_motion=False, _click_saw_drive_motion=False,
+        _click_last_status=0.0, _go_requested_distance_m=None, _go_start_pose=None,
+        _latest_odom_pose=(0.0, 0.0, 0.0), operator_units='m',
+        tracking_worker=Mock(), click_message='',
+        _go_distance_from_lidar=Mock(return_value=8.0))
+    for name in ('_viewer_request', '_click_request', '_click_poll', '_begin_go',
+                 '_start_go_drive', '_request_drive', '_clear_selected_target'):
+        setattr(v, name, getattr(module.DualCompressedViewer, name).__get__(v))
+
+    def wait_for(condition):
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            rclpy.spin_once(send.node, timeout_sec=0.01)
+            v._click_poll()
+            if condition():
+                return
+        pytest.fail(f'viewer did not advance: {v.click_state} {v.click_message}')
+
+    v._begin_go(None)
+    wait_for(lambda: v._click_saw_turn_motion)
+    assert list(motion.pending) == [('r', 20.0)]
+    v._go_distance_from_lidar.assert_not_called()
+    motion.pending.clear()
+    wait_for(lambda: bool(motion.pending))
+    assert list(motion.pending) == [('F', 8.0)]
+    assert v._go_requested_distance_m == 8.0
+    v._go_distance_from_lidar.assert_called_once()
 
 
 @pytest.mark.parametrize('offset', [-3600.0, 3600.0])

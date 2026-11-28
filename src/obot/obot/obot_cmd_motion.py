@@ -375,6 +375,7 @@ class MotionTest(Node):
         self.target_odom_yaw = None
         self.zero_odom_yaw = None
         self.command_success = True
+        self.viewer_result = None
         self.failure_reason = None
         self.state = 'idle'
         self.drive_start_pose = None
@@ -642,7 +643,8 @@ class MotionTest(Node):
         )
 
     def _stop(self):
-        if self.active is not None and self.command_success:
+        self.viewer_result = None
+        if (self.active is not None or self.pending) and self.command_success:
             self.command_success = False
             self.failure_reason = 'Command stopped before completion'
         self.active = None
@@ -702,6 +704,7 @@ class MotionTest(Node):
             return
 
         self.last_manual_override = time.monotonic()
+        self.viewer_result = None
 
         if self.active is not None or self.pending:
             self.get_logger().warning(
@@ -772,13 +775,19 @@ class MotionTest(Node):
 
         if command == 'STATUS':
             response.accepted = True
-            response.state = self.state
+            response.state = 'queued' if self.pending and self.state == 'idle' else self.state
             remaining = MotionTest._drive_remaining_m(self)
+            result = 'success' if self.command_success else 'failed'
+            identity = self.viewer_result
+            result_id = (f'{identity[0]}:{identity[1]}' if identity is not None else 'none')
             if remaining is None:
                 response.message = (
-                    f'active={self.active}, pending={len(self.pending)}')
+                    f'result={result}, request={result_id}, '
+                    f'active={self.active}, pending={len(self.pending)}, '
+                    f'reason={self.failure_reason or ""}')
             else:
                 response.message = (
+                    f'result={result}, request={result_id}, '
                     f'active={self.active}, pending={len(self.pending)}, '
                     f'remaining_m={remaining:.3f}')
             return response
@@ -879,10 +888,10 @@ class MotionTest(Node):
                 return response
         else:
             magnitude = float(request.distance_m)
-            if not math.isfinite(magnitude) or not 0.1 <= magnitude <= 6.0:
+            if not math.isfinite(magnitude) or magnitude < 0.1:
                 response.accepted = False
                 response.state = self.state
-                response.message = 'Distance must be between 0.1 and 6.0 meters'
+                response.message = 'Distance must be at least 0.1 meters and finite'
                 return response
 
         if (
@@ -915,6 +924,9 @@ class MotionTest(Node):
             self.command_linear_speed = self.linear_speed
             self.command_angular_speed = self.angular_speed
 
+        self.command_success = True
+        self.failure_reason = None
+        self.viewer_result = (request.client_id, request.sequence)
         if command == 'TURN':
             direction = 'r' if magnitude > 0 else 'l'
             magnitude = abs(magnitude)
@@ -962,6 +974,7 @@ class MotionTest(Node):
                     self._reset_origin()
             else:
                 if self.manual_owner is None:
+                    self.viewer_result = None
                     self.command_linear_speed = self.linear_speed
                     self.command_angular_speed = self.angular_speed
                     self.pending.append((command, magnitude))

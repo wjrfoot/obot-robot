@@ -13,7 +13,9 @@ import pytest
 def node():
     n = SimpleNamespace(
         state='moving', active=('F', 1.0, 1.0), pending=deque([('F', 1.0)]),
-        command_success=True, failure_reason=None, mux_tracker=MuxOutputTracker(0.5),
+        command_success=True, failure_reason=None, viewer_result=None,
+        drive_target_distance=None, drive_start_pose=None, odom_pose=None,
+        mux_tracker=MuxOutputTracker(0.5),
         observed_velocity=(0.0, 0.0), progress=0.0, timing=TimingDiagnostics(),
         still_since=None, inputs=queue.Queue(), manual_owner=None,
         manual_deadline=0.0, manual_velocity=(0.0, 0.0), viewer_sequences={},
